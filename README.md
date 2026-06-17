@@ -147,6 +147,23 @@ Duplicate koruması yoktur — kullanıcı istediği kadar tekrar deneyebilir.
 
 ---
 
+## Privacy Policy
+
+Uygulama, Meta App Review sürecinde **Privacy Policy URL** alanı için bir endpoint sunar:
+
+```
+https://YOUR_RENDER_URL/privacy
+```
+
+Örnek:
+```
+https://comment-automation.onrender.com/privacy
+```
+
+Bu endpoint herhangi bir token gerektirmez; doğrudan tarayıcıda açılabilir.
+
+---
+
 ## Notlar
 
 - `sentReplies.json` aynı `comment_id` için tekrar private reply gönderilmesini engeller.

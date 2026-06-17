@@ -326,6 +326,138 @@ app.post("/webhook/instagram", async (req, res) => {
   }
 });
 
+// ---------- Privacy Policy ----------
+
+app.get("/privacy", (req, res) => {
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(`<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy — Comment Automation</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f9f9f9;
+      color: #1a1a1a;
+      line-height: 1.7;
+    }
+    .wrapper {
+      max-width: 680px;
+      margin: 60px auto;
+      padding: 0 24px 80px;
+    }
+    header {
+      border-bottom: 2px solid #e0e0e0;
+      padding-bottom: 24px;
+      margin-bottom: 40px;
+    }
+    header h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+    }
+    header p {
+      margin-top: 6px;
+      color: #555;
+      font-size: 0.9rem;
+    }
+    h2 {
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin: 36px 0 10px;
+      color: #111;
+    }
+    p, li {
+      font-size: 0.95rem;
+      color: #333;
+    }
+    ul {
+      padding-left: 20px;
+    }
+    ul li {
+      margin-bottom: 6px;
+    }
+    .badge {
+      display: inline-block;
+      background: #1a1a1a;
+      color: #fff;
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 999px;
+      margin-bottom: 12px;
+      letter-spacing: 0.4px;
+    }
+    footer {
+      margin-top: 60px;
+      border-top: 1px solid #e0e0e0;
+      padding-top: 20px;
+      font-size: 0.8rem;
+      color: #888;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <header>
+      <span class="badge">Privacy Policy</span>
+      <h1>Comment Automation</h1>
+      <p>Son güncelleme: ${new Date().toLocaleDateString("tr-TR", { year: "numeric", month: "long", day: "numeric" })}</p>
+    </header>
+
+    <h2>Uygulama Hakkında</h2>
+    <p>
+      <strong>Comment Automation</strong>, <strong>Ahmet Cerit</strong> tarafından geliştirilen bir Instagram otomasyon uygulamasıdır.
+      Bu uygulama, Instagram yorumlarını ve mesajlarını belirli tetikleyici kelimeler üzerinden izleyerek kullanıcılara otomatik DM gönderir.
+    </p>
+
+    <h2>Hangi Veriler İşlenir?</h2>
+    <ul>
+      <li>Yorum metni (tetikleyici kelime tespiti için)</li>
+      <li>Instagram Scoped User ID (IGSID)</li>
+      <li>Takip durumu (<code>is_user_follow_business</code>)</li>
+      <li>Mesaj etkileşimleri (buton tıklamaları ve quick reply yanıtları)</li>
+    </ul>
+
+    <h2>Veriler Nasıl Kullanılır?</h2>
+    <p>Toplanan veriler yalnızca aşağıdaki amaçlarla kullanılır:</p>
+    <ul>
+      <li>Tetikleyici kelime içeren yorumlara otomatik DM göndermek</li>
+      <li>Kullanıcının profili takip edip etmediğini kontrol etmek</li>
+      <li>Aynı yoruma birden fazla mesaj gönderilmesini önlemek (duplicate kontrolü)</li>
+      <li>Link gönderme işlemini tamamlamak</li>
+    </ul>
+
+    <h2>Veri Paylaşımı</h2>
+    <p>
+      Kullanıcı verileri hiçbir üçüncü tarafa satılmaz, kiralanmaz veya pazarlama amacıyla paylaşılmaz.
+      Veriler yalnızca bu otomasyonun çalışması için geçici olarak işlenir.
+    </p>
+
+    <h2>Kullanıcı Etkileşimi</h2>
+    <p>
+      Kullanıcılar bu otomasyon sistemiyle yalnızca Instagram üzerinden etkileşime girer:
+      bir post veya Reels yorumu yaparak ya da gelen DM'e yanıt vererek.
+      Sistem, yalnızca kullanıcının başlattığı etkileşimlere yanıt verir.
+    </p>
+
+    <h2>İletişim</h2>
+    <p>
+      Gizlilik politikasıyla ilgili sorularınız için Instagram üzerinden ulaşabilirsiniz:<br />
+      <strong><a href="https://www.instagram.com/ahmetcerit.ai/" target="_blank" rel="noopener">@ahmetcerit.ai</a></strong>
+    </p>
+
+    <footer>
+      &copy; ${new Date().getFullYear()} Ahmet Cerit &mdash; Comment Automation
+    </footer>
+  </div>
+</body>
+</html>`);
+});
+
 // ---------- Health check ----------
 
 app.get("/", (req, res) => {
