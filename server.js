@@ -11,6 +11,7 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+const YKS_PDF_LINK = process.env.YKS_PDF_LINK;
 const INSTAGRAM_PROFILE_URL = "https://www.instagram.com/ahmetcerit.ai/";
 const SENT_REPLIES_PATH = path.join(__dirname, "sentReplies.json");
 const GRAPH_API = "https://graph.instagram.com/v25.0";
@@ -52,6 +53,19 @@ const TRIGGER_KEYWORDS = [
   "ulasabilir miyim",
 ];
 
+const YKS_TRIGGER_KEYWORDS = [
+  "yks",
+  "tyt",
+  "ayt",
+  "pdf",
+  "turkce",
+  "türkçe",
+  "deneme",
+  "son tekrar",
+  "calisma kagidi",
+  "çalışma kağıdı",
+];
+
 const PUBLIC_REPLY_VARIATIONS = [
   "Size ilettim 🙌",
   "DM'den gönderdim 🚀",
@@ -81,18 +95,133 @@ function normalizeText(text) {
     .trim();
 }
 
-function includesTriggerKeyword(text) {
+function includesKeywordFromList(text, keywords) {
   const normalizedText = normalizeText(text);
-  return TRIGGER_KEYWORDS.some((keyword) =>
-    normalizedText.includes(normalizeText(keyword))
-  );
+  if (!normalizedText) return false;
+
+  const words = normalizedText.split(" ");
+
+  return keywords.some((keyword) => {
+    const normalizedKeyword = normalizeText(keyword);
+    if (!normalizedKeyword) return false;
+
+    // Çok kısa tetikleyiciler için includes kullanma.
+    // Örn: "at" kelimesi "anlat", "katıl", "hatta" gibi kelimeleri yanlış tetikleyebilir.
+    if (!normalizedKeyword.includes(" ") && normalizedKeyword.length <= 3) {
+      return words.includes(normalizedKeyword);
+    }
+
+    if (!normalizedKeyword.includes(" ")) {
+      return words.includes(normalizedKeyword);
+    }
+
+    return normalizedText.includes(normalizedKeyword);
+  });
 }
 
-const FOLLOW_CHECK_QUICK_REPLY = {
-  content_type: "text",
-  title: "Takip ettim ✅",
-  payload: "CHECK_FOLLOW",
-};
+function includesTriggerKeyword(text) {
+  return includesKeywordFromList(text, TRIGGER_KEYWORDS);
+}
+
+function includesYksTriggerKeyword(text) {
+  return includesKeywordFromList(text, YKS_TRIGGER_KEYWORDS);
+}
+
+function getRequestTypeFromText(text) {
+  if (includesYksTriggerKeyword(text)) return "yks";
+  if (includesTriggerKeyword(text)) return "prompt";
+  return null;
+}
+
+function getFollowCheckPayload(resourceType = "prompt") {
+  return resourceType === "yks" ? "CHECK_FOLLOW_YKS" : "CHECK_FOLLOW_PROMPT";
+}
+
+function getFollowCheckQuickReply(resourceType = "prompt") {
+  return {
+    content_type: "text",
+    title: "Takip ettim ✅",
+    payload: getFollowCheckPayload(resourceType),
+  };
+}
+
+function getFollowGateText(resourceType = "prompt") {
+  if (resourceType === "yks") {
+    return "Selamlar 👋 YKS son tekrar PDF’ini göndermem için önce profili takip etmen gerekiyor 👇";
+  }
+
+  return "Selamlar, linki göndermem için önce profili takip etmen gerekiyor 👇";
+}
+
+function getLinkMessage(resourceType = "prompt") {
+  if (resourceType === "yks") {
+    if (!YKS_PDF_LINK) {
+      return "PDF linki henüz sisteme eklenmemiş görünüyor. Birazdan tekrar dener misin?";
+    }
+
+    return `Harika, PDF burada 👇\n\n📘 YKS Son Tekrar Türkçe Denemesi:\n${YKS_PDF_LINK}\n\nSınava girecek bir arkadaşın varsa ona da göndermeyi unutma. Başarılar 🚀`;
+  }
+
+  return `İşte 🙌 Link burada:\n\n${getPromptLink()}\n\nİşine yararsa takipte kalmayı unutma 🚀`;
+}
+
+// ---------- Safety helpers ----------
+
+function getSelfIds() {
+  return [
+    process.env.IG_BUSINESS_ID,
+    process.env.PAGE_ID,
+    process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID,
+  ]
+    .filter(Boolean)
+    .map(String);
+}
+
+function isSelfId(id) {
+  if (!id) return false;
+  return getSelfIds().includes(String(id));
+}
+
+function isSafeRecipientId(igsid) {
+  if (!igsid) {
+    console.log("🚫 BLOCKED_EMPTY_RECIPIENT");
+    return false;
+  }
+
+  if (isSelfId(igsid)) {
+    console.log(`🚫 BLOCKED_SELF_DM_ATTEMPT → ${igsid}`);
+    return false;
+  }
+
+  return true;
+}
+
+function shouldIgnoreMessagingEvent(event) {
+  const senderId = event?.sender?.id;
+  const recipientId = event?.recipient?.id;
+
+  if (!senderId) {
+    console.log("🚫 MESSAGE_EVENT_WITHOUT_SENDER_IGNORED");
+    return true;
+  }
+
+  if (event?.message?.is_echo === true) {
+    console.log("🚫 ECHO_MESSAGE_IGNORED");
+    return true;
+  }
+
+  if (isSelfId(senderId)) {
+    console.log(`🚫 SELF_MESSAGE_IGNORED → ${senderId}`);
+    return true;
+  }
+
+  if (senderId === recipientId) {
+    console.log(`🚫 SENDER_EQUALS_RECIPIENT_IGNORED → ${senderId}`);
+    return true;
+  }
+
+  return false;
+}
 
 // ---------- sentReplies helpers ----------
 
@@ -152,14 +281,14 @@ async function sendPrivateReplyToComment(commentId, messagePayload) {
 
 // Yoruma follow-gate mesajını private reply olarak gönderir.
 // Önce URL button template dener; hata alırsa fallback text + quick reply gönderir.
-async function sendFollowGateMessageToComment(commentId) {
+async function sendFollowGateMessageToComment(commentId, resourceType = "prompt") {
   try {
     await sendPrivateReplyToComment(commentId, {
       attachment: {
         type: "template",
         payload: {
           template_type: "button",
-          text: "Selamlar, linki göndermem için önce profili takip etmen gerekiyor 👇",
+          text: getFollowGateText(resourceType),
           buttons: [
             {
               type: "web_url",
@@ -169,7 +298,7 @@ async function sendFollowGateMessageToComment(commentId) {
             {
               type: "postback",
               title: "Takip ettim ✅",
-              payload: "CHECK_FOLLOW",
+              payload: getFollowCheckPayload(resourceType),
             },
           ],
         },
@@ -180,8 +309,8 @@ async function sendFollowGateMessageToComment(commentId) {
     console.error(`❌ Button template failed for private reply: ${err.message}`);
     try {
       await sendPrivateReplyToComment(commentId, {
-        text: `Selamlar, linki göndermem için önce profili takip etmen gerekiyor 👇\n\nProfili buradan aç:\n${INSTAGRAM_PROFILE_URL}\n\nTakip ettikten sonra aşağıdaki "Takip ettim ✅" butonuna bas.`,
-        quick_replies: [FOLLOW_CHECK_QUICK_REPLY],
+        text: `${getFollowGateText(resourceType)}\n\nProfili buradan aç:\n${INSTAGRAM_PROFILE_URL}\n\nTakip ettikten sonra aşağıdaki "Takip ettim ✅" butonuna bas.`,
+        quick_replies: [getFollowCheckQuickReply(resourceType)],
       });
       console.log(`✅ FALLBACK MESSAGE SENT (private reply) → comment ${commentId}`);
     } catch (fallbackErr) {
@@ -194,6 +323,8 @@ async function sendFollowGateMessageToComment(commentId) {
 
 // Kullanıcıya düz metin DM gönderir
 async function sendMessageToUser(igsid, text) {
+  if (!isSafeRecipientId(igsid)) return;
+
   await callGraphAPI("/me/messages", {
     recipient: { id: igsid },
     message: { text },
@@ -202,7 +333,9 @@ async function sendMessageToUser(igsid, text) {
 }
 
 // Kullanıcıya URL button template gönderir
-async function sendButtonTemplateToUser(igsid) {
+async function sendButtonTemplateToUser(igsid, resourceType = "prompt") {
+  if (!isSafeRecipientId(igsid)) return;
+
   return callGraphAPI("/me/messages", {
     recipient: { id: igsid },
     message: {
@@ -210,7 +343,7 @@ async function sendButtonTemplateToUser(igsid) {
         type: "template",
         payload: {
           template_type: "button",
-          text: "Selamlar, linki göndermem için önce profili takip etmen gerekiyor 👇",
+          text: getFollowGateText(resourceType),
           buttons: [
             {
               type: "web_url",
@@ -220,7 +353,7 @@ async function sendButtonTemplateToUser(igsid) {
             {
               type: "postback",
               title: "Takip ettim ✅",
-              payload: "CHECK_FOLLOW",
+              payload: getFollowCheckPayload(resourceType),
             },
           ],
         },
@@ -231,9 +364,11 @@ async function sendButtonTemplateToUser(igsid) {
 
 // Kullanıcıya follow-gate mesajını normal DM olarak gönderir.
 // Önce URL button template dener; hata alırsa fallback text + quick reply gönderir.
-async function sendFollowGateMessageToUser(igsid) {
+async function sendFollowGateMessageToUser(igsid, resourceType = "prompt") {
+  if (!isSafeRecipientId(igsid)) return;
+
   try {
-    await sendButtonTemplateToUser(igsid);
+    await sendButtonTemplateToUser(igsid, resourceType);
     console.log(`✅ NORMAL DM SENT (button template) → ${igsid}`);
   } catch (err) {
     console.error(`❌ Button template failed for DM: ${err.message}`);
@@ -241,8 +376,8 @@ async function sendFollowGateMessageToUser(igsid) {
       await callGraphAPI("/me/messages", {
         recipient: { id: igsid },
         message: {
-          text: `Selamlar, linki göndermem için önce profili takip etmen gerekiyor 👇\n\nProfili buradan aç:\n${INSTAGRAM_PROFILE_URL}\n\nTakip ettikten sonra aşağıdaki "Takip ettim ✅" butonuna bas.`,
-          quick_replies: [FOLLOW_CHECK_QUICK_REPLY],
+          text: `${getFollowGateText(resourceType)}\n\nProfili buradan aç:\n${INSTAGRAM_PROFILE_URL}\n\nTakip ettikten sonra aşağıdaki "Takip ettim ✅" butonuna bas.`,
+          quick_replies: [getFollowCheckQuickReply(resourceType)],
         },
       });
       console.log(`✅ FALLBACK MESSAGE SENT → ${igsid}`);
@@ -269,20 +404,19 @@ async function checkFollowStatus(igsid) {
 }
 
 // Takip durumuna göre link ya da uyarı mesajı gönderir
-async function replyBasedOnFollowStatus(igsid) {
+async function replyBasedOnFollowStatus(igsid, resourceType = "prompt") {
+  if (!isSafeRecipientId(igsid)) return;
+
   const profile = await checkFollowStatus(igsid);
 
   if (profile.is_user_follow_business === true) {
-    await sendMessageToUser(
-      igsid,
-      `İşte 🙌 Link burada:\n\n${getPromptLink()}\n\nİşine yararsa takipte kalmayı unutma 🚀`
-    );
+    await sendMessageToUser(igsid, getLinkMessage(resourceType));
   } else {
     await callGraphAPI("/me/messages", {
       recipient: { id: igsid },
       message: {
         text: `Henüz takip ettiğini göremiyorum 💥\n\nÖnce profili takip et, sonra tekrar "Takip ettim ✅" butonuna bas.`,
-        quick_replies: [FOLLOW_CHECK_QUICK_REPLY],
+        quick_replies: [getFollowCheckQuickReply(resourceType)],
       },
     });
     console.log(`✅ NORMAL DM SENT (not following — retry prompt) → ${igsid}`);
@@ -303,18 +437,26 @@ async function handleCommentWebhook(commentData) {
     return;
   }
 
-  if (!includesTriggerKeyword(commentText)) {
+  if (isSelfId(commenterId)) {
+    console.log(`🚫 SELF_COMMENT_IGNORED → ${commenterId}`);
+    return;
+  }
+
+  const requestType = getRequestTypeFromText(commentText);
+
+  if (!requestType) {
     console.log(`🚫 NO TRIGGER KEYWORD FOUND: ${commentText}`);
     return;
   }
 
-  console.log(`🎯 TRIGGER COMMENT DETECTED: ${commentText}`);
+  console.log(`🎯 TRIGGER COMMENT DETECTED (${requestType}): ${commentText}`);
 
   const sentReplies = loadSentReplies();
 
   // Mevcut kaydı al ya da yeni oluştur
   if (!sentReplies[commentId]) {
     sentReplies[commentId] = {
+      requestType,
       privateReplySent: false,
       publicReplySent: false,
       publicReplyText: null,
@@ -327,71 +469,80 @@ async function handleCommentWebhook(commentData) {
 
   // 1. Private reply — daha önce gönderilmediyse
   if (!record.privateReplySent) {
-    await sendFollowGateMessageToComment(commentId);
     sentReplies[commentId].privateReplySent = true;
+    sentReplies[commentId].privateReplyMarkedAt = new Date().toISOString();
     saveSentReplies(sentReplies);
+
+    await sendFollowGateMessageToComment(commentId, requestType);
   } else {
-    console.log(`⏭️  Private reply already sent for comment ${commentId}, skipping`);
+    console.log(`⏭️  DUPLICATE_PRIVATE_REPLY_IGNORED → comment ${commentId}`);
   }
 
   // 2. Public comment reply — daha önce gönderilmediyse
   if (!record.publicReplySent) {
     const publicReply = getRandomPublicReply();
     console.log(`📢 PUBLIC COMMENT REPLY SELECTED: ${publicReply}`);
+
+    sentReplies[commentId].publicReplySent = true;
+    sentReplies[commentId].publicReplyText = publicReply;
+    sentReplies[commentId].publicReplyMarkedAt = new Date().toISOString();
+    saveSentReplies(sentReplies);
+
     try {
       await replyToComment(commentId, publicReply);
-      sentReplies[commentId].publicReplySent = true;
-      sentReplies[commentId].publicReplyText = publicReply;
-      saveSentReplies(sentReplies);
       console.log(`✅ PUBLIC COMMENT REPLY SENT → comment ${commentId}`);
     } catch (err) {
       console.error(`❌ PUBLIC COMMENT REPLY FAILED → comment ${commentId}: ${err.message}`);
-      // publicReplySent false kalır; bir sonraki webhook tetiklemesinde tekrar denenebilir
+      console.error(`⚠️ Public reply will not be retried automatically to avoid duplicate comments.`);
     }
   } else {
-    console.log(`⏭️  Public reply already sent for comment ${commentId}, skipping`);
+    console.log(`⏭️  DUPLICATE_PUBLIC_REPLY_IGNORED → comment ${commentId}`);
   }
 }
 
 async function handleMessageWebhook(event) {
   console.log("📨 MESSAGE WEBHOOK RECEIVED:", JSON.stringify(event, null, 2));
 
-  if (event?.message?.is_echo) return;
+  if (shouldIgnoreMessagingEvent(event)) return;
 
   const senderId = event?.sender?.id;
-  if (!senderId) return;
 
   const quickReplyPayload = event?.message?.quick_reply?.payload ?? "";
   const messageText = event?.message?.text ?? "";
   const messageTextLower = messageText.toLowerCase().trim();
 
   // 1. Quick reply veya "takip ettim" → mevcut follow-check akışı
-  if (quickReplyPayload === "CHECK_FOLLOW") {
-    await replyBasedOnFollowStatus(senderId);
+  if (quickReplyPayload === "CHECK_FOLLOW" || quickReplyPayload === "CHECK_FOLLOW_PROMPT") {
+    await replyBasedOnFollowStatus(senderId, "prompt");
+    return;
+  }
+
+  if (quickReplyPayload === "CHECK_FOLLOW_YKS") {
+    await replyBasedOnFollowStatus(senderId, "yks");
     return;
   }
 
   if (messageTextLower.includes("takip ettim")) {
-    await replyBasedOnFollowStatus(senderId);
+    const requestType = getRequestTypeFromText(messageText) || "prompt";
+    await replyBasedOnFollowStatus(senderId, requestType);
     return;
   }
 
   // 2. DM trigger keyword → takip kontrolüne göre link veya follow-gate
-  if (includesTriggerKeyword(messageText)) {
-    console.log(`📲 DM TRIGGER DETECTED: ${messageText}`);
+  const requestType = getRequestTypeFromText(messageText);
+
+  if (requestType) {
+    console.log(`📲 DM TRIGGER DETECTED (${requestType}): ${messageText}`);
     try {
       const profile = await checkFollowStatus(senderId);
       console.log(`📊 DM TRIGGER FOLLOW CHECK RESULT for ${senderId}`);
 
       if (profile.is_user_follow_business === true) {
         console.log(`✅ DM TRIGGER USER FOLLOWS, SENDING LINK → ${senderId}`);
-        await sendMessageToUser(
-          senderId,
-          `İşte 🙌 Link burada:\n\n${getPromptLink()}\n\nİşine yararsa takipte kalmayı unutma 🚀`
-        );
+        await sendMessageToUser(senderId, getLinkMessage(requestType));
       } else {
         console.log(`➡️ DM TRIGGER USER DOES NOT FOLLOW, SENDING FOLLOW GATE → ${senderId}`);
-        await sendFollowGateMessageToUser(senderId);
+        await sendFollowGateMessageToUser(senderId, requestType);
       }
     } catch (err) {
       console.error(`❌ DM trigger follow check error: ${err.message}`);
@@ -405,13 +556,19 @@ async function handleMessageWebhook(event) {
 async function handlePostbackWebhook(event) {
   console.log("🔘 POSTBACK WEBHOOK RECEIVED:", JSON.stringify(event, null, 2));
 
+  if (shouldIgnoreMessagingEvent(event)) return;
+
   const senderId = event?.sender?.id;
   const payload = event?.postback?.payload ?? "";
 
-  if (!senderId) return;
+  if (payload === "CHECK_FOLLOW" || payload === "CHECK_FOLLOW_PROMPT") {
+    await replyBasedOnFollowStatus(senderId, "prompt");
+    return;
+  }
 
-  if (payload === "CHECK_FOLLOW") {
-    await replyBasedOnFollowStatus(senderId);
+  if (payload === "CHECK_FOLLOW_YKS") {
+    await replyBasedOnFollowStatus(senderId, "yks");
+    return;
   }
 }
 
@@ -468,7 +625,7 @@ app.post("/webhook/instagram", async (req, res) => {
         await handlePostbackWebhook(event).catch((err) =>
           console.error("❌ handlePostbackWebhook error:", err.message)
         );
-      } else if (event?.message && !event.message.is_echo) {
+      } else if (event?.message) {
         await handleMessageWebhook(event).catch((err) =>
           console.error("❌ handleMessageWebhook error:", err.message)
         );
@@ -612,7 +769,11 @@ app.get("/privacy", (req, res) => {
 // ---------- Health check ----------
 
 app.get("/", (req, res) => {
-  res.json({ status: "ok", service: "instagram-comment-automation" });
+  res.json({
+    status: "ok",
+    service: "instagram-comment-automation",
+    yksPdfConfigured: Boolean(YKS_PDF_LINK),
+  });
 });
 
 app.listen(PORT, () => {
