@@ -115,14 +115,38 @@ checkFollowStatus(igsid) → is_user_follow_business
 
 ---
 
+## Trigger Keyword Sistemi
+
+Tetikleyici kelime listesi geniş ve typo-toleranslı tutulmuştur. Kullanıcıların sık yaptığı yazım hatalarını ve Türkçe istek ifadelerini kapsar:
+
+| Kategori | Örnekler |
+|---|---|
+| Prompt typo'ları | `prompt`, `promt`, `pormpt`, `promot`, `promtp` |
+| Link/site | `link`, `lnk`, `site` |
+| Nasıl | `nasıl`, `nasil` |
+| Gönder | `gönder`, `gonder`, `göndersene`, `gönderir misin` |
+| At/yolla | `atar mısın`, `atsana`, `at`, `yolla`, `yollar mısın` |
+| Ver | `ver`, `versene` |
+| Bana da / istek | `bana da`, `banada`, `istiyorum` |
+| Ulaşabilir miyim | `alabilir miyim`, `ulaşabilir miyim` |
+
+### Metin Normalizasyonu
+
+Tüm yorum metinleri eşleşme öncesinde normalize edilir:
+- Küçük harfe çevrilir
+- Türkçe karakterler sadeleştirilir: `ğ→g`, `ü→u`, `ş→s`, `ı→i`, `ö→o`, `ç→c`
+- Noktalama işaretleri kaldırılır
+- Fazla boşluklar temizlenir
+
+Bu sayede `"Gönderir Misin?"`, `"gonderir misin"`, `"Gondeır mısın"` gibi varyasyonlar hepsi tetikler.
+
+---
+
 ## Public Comment Reply
 
-Trigger keyword içeren bir yorum geldiğinde sistem hem kullanıcıya DM akışını başlatır hem de aynı yoruma public olarak yanıt yazar. Public yanıt her seferinde 5 farklı varyasyondan random seçilir:
+Trigger keyword içeren bir yorum geldiğinde sistem hem kullanıcıya DM akışını başlatır hem de aynı yoruma public olarak yanıt yazar. Public yanıt her seferinde mevcut varyasyonlardan random seçilir.
 
-- "Size ilettim 🙌"
-- "DM'den gönderdim 🚀"
-- "DM kutuna bıraktım, kontrol et 👀"
-- "Gönderdim, DM'ini kontrol et 🔥"
+**Bağımsız duplicate koruması:** Private reply ve public reply birbirinden bağımsız izlenir. Public reply API hatası alırsa `publicReplySent` false kalır ve bir sonraki webhook tetiklemesinde yeniden denenir; private reply etkilenmez.
 
 Public reply başarısız olursa (örneğin API hatası veya yalnızca üst-level yorumlara reply yapılabilir kısıtı) hata loglanır ve DM akışı etkilenmez.
 

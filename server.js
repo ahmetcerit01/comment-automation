@@ -15,7 +15,42 @@ const INSTAGRAM_PROFILE_URL = "https://www.instagram.com/ahmetcerit.ai/";
 const SENT_REPLIES_PATH = path.join(__dirname, "sentReplies.json");
 const GRAPH_API = "https://graph.instagram.com/v25.0";
 
-const TRIGGER_KEYWORDS = ["prompt", "link", "site", "nasıl", "nasil"];
+const TRIGGER_KEYWORDS = [
+  "prompt",
+  "promt",
+  "pormpt",
+  "promot",
+  "promtp",
+  "link",
+  "lnk",
+  "site",
+  "nasıl",
+  "nasil",
+  "gönder",
+  "gonder",
+  "göndersene",
+  "gondersene",
+  "gönderir misin",
+  "gonderir misin",
+  "atar mısın",
+  "atar misin",
+  "atarmısın",
+  "atarmisin",
+  "atsana",
+  "at",
+  "ver",
+  "versene",
+  "yolla",
+  "yollar mısın",
+  "yollar misin",
+  "bana da",
+  "banada",
+  "istiyorum",
+  "alabilir miyim",
+  "alabilirmiyim",
+  "ulaşabilir miyim",
+  "ulasabilir miyim",
+];
 
 const PUBLIC_REPLY_VARIATIONS = [
   "Size ilettim 🙌",
@@ -30,6 +65,27 @@ function getPromptLink() {
 
 function getRandomPublicReply() {
   return PUBLIC_REPLY_VARIATIONS[Math.floor(Math.random() * PUBLIC_REPLY_VARIATIONS.length)];
+}
+
+function normalizeText(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replaceAll("ğ", "g")
+    .replaceAll("ü", "u")
+    .replaceAll("ş", "s")
+    .replaceAll("ı", "i")
+    .replaceAll("ö", "o")
+    .replaceAll("ç", "c")
+    .replace(/[^\w\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function includesTriggerKeyword(text) {
+  const normalizedText = normalizeText(text);
+  return TRIGGER_KEYWORDS.some((keyword) =>
+    normalizedText.includes(normalizeText(keyword))
+  );
 }
 
 const FOLLOW_CHECK_QUICK_REPLY = {
@@ -239,7 +295,7 @@ async function handleCommentWebhook(commentData) {
   console.log("💬 COMMENT WEBHOOK RECEIVED:", JSON.stringify(commentData, null, 2));
 
   const commentId = commentData?.id;
-  const commentText = (commentData?.text ?? "").toLowerCase();
+  const commentText = commentData?.text ?? "";
   const commenterId = commentData?.from?.id;
 
   if (!commenterId || !commentId) {
@@ -247,43 +303,53 @@ async function handleCommentWebhook(commentData) {
     return;
   }
 
-  const hasTrigger = TRIGGER_KEYWORDS.some((kw) => commentText.includes(kw));
-  if (!hasTrigger) return;
-
-  const sentReplies = loadSentReplies();
-  if (sentReplies[commentId]) {
-    console.log(`⏭️  Already replied to comment ${commentId}, skipping`);
+  if (!includesTriggerKeyword(commentText)) {
+    console.log(`🚫 NO TRIGGER KEYWORD FOUND: ${commentText}`);
     return;
   }
 
-  // Kaydı başlangıçta yaz — sonraki duplicate webhook tetiklemeleri engellenir
-  sentReplies[commentId] = {
-    privateReplySent: false,
-    publicReplySent: false,
-    publicReplyText: null,
-    createdAt: new Date().toISOString(),
-  };
-  saveSentReplies(sentReplies);
+  console.log(`🎯 TRIGGER COMMENT DETECTED: ${commentText}`);
 
-  console.log(`🎯 Trigger found in comment ${commentId} from ${commenterId}`);
+  const sentReplies = loadSentReplies();
 
-  // 1. Private reply (follow-gate DM akışı)
-  await sendFollowGateMessageToComment(commentId);
-  sentReplies[commentId].privateReplySent = true;
-  saveSentReplies(sentReplies);
-
-  // 2. Public comment reply
-  const publicReply = getRandomPublicReply();
-  console.log(`📢 PUBLIC COMMENT REPLY SELECTED: ${publicReply}`);
-
-  try {
-    await replyToComment(commentId, publicReply);
-    sentReplies[commentId].publicReplySent = true;
-    sentReplies[commentId].publicReplyText = publicReply;
+  // Mevcut kaydı al ya da yeni oluştur
+  if (!sentReplies[commentId]) {
+    sentReplies[commentId] = {
+      privateReplySent: false,
+      publicReplySent: false,
+      publicReplyText: null,
+      createdAt: new Date().toISOString(),
+    };
     saveSentReplies(sentReplies);
-    console.log(`✅ PUBLIC COMMENT REPLY SENT → comment ${commentId}`);
-  } catch (err) {
-    console.error(`❌ PUBLIC COMMENT REPLY FAILED → comment ${commentId}: ${err.message}`);
+  }
+
+  const record = sentReplies[commentId];
+
+  // 1. Private reply — daha önce gönderilmediyse
+  if (!record.privateReplySent) {
+    await sendFollowGateMessageToComment(commentId);
+    sentReplies[commentId].privateReplySent = true;
+    saveSentReplies(sentReplies);
+  } else {
+    console.log(`⏭️  Private reply already sent for comment ${commentId}, skipping`);
+  }
+
+  // 2. Public comment reply — daha önce gönderilmediyse
+  if (!record.publicReplySent) {
+    const publicReply = getRandomPublicReply();
+    console.log(`📢 PUBLIC COMMENT REPLY SELECTED: ${publicReply}`);
+    try {
+      await replyToComment(commentId, publicReply);
+      sentReplies[commentId].publicReplySent = true;
+      sentReplies[commentId].publicReplyText = publicReply;
+      saveSentReplies(sentReplies);
+      console.log(`✅ PUBLIC COMMENT REPLY SENT → comment ${commentId}`);
+    } catch (err) {
+      console.error(`❌ PUBLIC COMMENT REPLY FAILED → comment ${commentId}: ${err.message}`);
+      // publicReplySent false kalır; bir sonraki webhook tetiklemesinde tekrar denenebilir
+    }
+  } else {
+    console.log(`⏭️  Public reply already sent for comment ${commentId}, skipping`);
   }
 }
 
