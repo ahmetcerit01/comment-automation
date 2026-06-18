@@ -12,11 +12,25 @@ const PORT = process.env.PORT || 3000;
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const INSTAGRAM_PROFILE_URL = "https://www.instagram.com/ahmetcerit.ai/";
-const PROMO_LINK = "https://ai-prompt-hub-50231461829.europe-west2.run.app/";
 const SENT_REPLIES_PATH = path.join(__dirname, "sentReplies.json");
 const GRAPH_API = "https://graph.instagram.com/v25.0";
 
 const TRIGGER_KEYWORDS = ["prompt", "link", "site", "nasıl", "nasil"];
+
+const PUBLIC_REPLY_VARIATIONS = [
+  "Size ilettim 🙌",
+  "DM'den gönderdim 🚀",
+  "DM kutuna bıraktım, kontrol et 👀",
+  "Gönderdim, DM'ini kontrol et 🔥",
+];
+
+function getPromptLink() {
+  return process.env.PROMPT_LINK || "https://ai-prompt-hub-50231461829.europe-west2.run.app/";
+}
+
+function getRandomPublicReply() {
+  return PUBLIC_REPLY_VARIATIONS[Math.floor(Math.random() * PUBLIC_REPLY_VARIATIONS.length)];
+}
 
 const FOLLOW_CHECK_QUICK_REPLY = {
   content_type: "text",
@@ -36,6 +50,22 @@ function loadSentReplies() {
 
 function saveSentReplies(data) {
   fs.writeFileSync(SENT_REPLIES_PATH, JSON.stringify(data, null, 2));
+}
+
+// ---------- Public comment reply ----------
+
+async function replyToComment(commentId, message) {
+  const url = `${GRAPH_API}/${commentId}/replies?access_token=${ACCESS_TOKEN}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(JSON.stringify(data));
+  }
+  return data;
 }
 
 // ---------- Low-level Graph API ----------
@@ -189,7 +219,7 @@ async function replyBasedOnFollowStatus(igsid) {
   if (profile.is_user_follow_business === true) {
     await sendMessageToUser(
       igsid,
-      `İşte 🙌 Link burada:\n\n${PROMO_LINK}\n\nİşine yararsa takipte kalmayı unutma 🚀`
+      `İşte 🙌 Link burada:\n\n${getPromptLink()}\n\nİşine yararsa takipte kalmayı unutma 🚀`
     );
   } else {
     await callGraphAPI("/me/messages", {
@@ -226,11 +256,35 @@ async function handleCommentWebhook(commentData) {
     return;
   }
 
-  sentReplies[commentId] = { repliedAt: new Date().toISOString(), commenterId };
+  // Kaydı başlangıçta yaz — sonraki duplicate webhook tetiklemeleri engellenir
+  sentReplies[commentId] = {
+    privateReplySent: false,
+    publicReplySent: false,
+    publicReplyText: null,
+    createdAt: new Date().toISOString(),
+  };
   saveSentReplies(sentReplies);
 
   console.log(`🎯 Trigger found in comment ${commentId} from ${commenterId}`);
+
+  // 1. Private reply (follow-gate DM akışı)
   await sendFollowGateMessageToComment(commentId);
+  sentReplies[commentId].privateReplySent = true;
+  saveSentReplies(sentReplies);
+
+  // 2. Public comment reply
+  const publicReply = getRandomPublicReply();
+  console.log(`📢 PUBLIC COMMENT REPLY SELECTED: ${publicReply}`);
+
+  try {
+    await replyToComment(commentId, publicReply);
+    sentReplies[commentId].publicReplySent = true;
+    sentReplies[commentId].publicReplyText = publicReply;
+    saveSentReplies(sentReplies);
+    console.log(`✅ PUBLIC COMMENT REPLY SENT → comment ${commentId}`);
+  } catch (err) {
+    console.error(`❌ PUBLIC COMMENT REPLY FAILED → comment ${commentId}: ${err.message}`);
+  }
 }
 
 async function handleMessageWebhook(event) {

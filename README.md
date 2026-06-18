@@ -8,11 +8,12 @@ Node.js + Express tabanlı Instagram yorum → DM otomasyon botu.
 npm install
 ```
 
-`.env` dosyasını doldurun:
+`.env` dosyasını doldurun (`.env.example` şablonu olarak kullanılabilir):
 
 ```
 ACCESS_TOKEN=<Instagram Graph API uzun ömürlü token>
 VERIFY_TOKEN=ahmet_prompt_bot_2026
+PROMPT_LINK=https://ai-prompt-hub-50231461829.europe-west2.run.app/
 PORT=3000
 ```
 
@@ -87,11 +88,17 @@ Kullanıcı yorum yazar ("prompt", "link", "site", "nasıl", "nasil")
     ↓
 POST /webhook/instagram → handleCommentWebhook()
     ↓
-sentReplies.json kontrolü (aynı comment_id için tekrar gönderme)
+sentReplies.json kontrolü (aynı comment_id için tekrar işlem yapılmaz)
     ↓
-sendFollowGateMessageToComment(commentId)
-    ├─ URL button template dener (private reply)
-    └─ Hata → fallback text + "Takip ettim ✅" quick reply (private reply)
+sendFollowGateMessageToComment(commentId)   ← private reply
+    ├─ URL button template dener
+    └─ Hata → fallback text + "Takip ettim ✅" quick reply
+    ↓
+replyToComment(commentId, getRandomPublicReply())   ← public comment reply
+    ├─ 5 varyasyondan random seçilir
+    └─ Hata → loglanır, DM akışını etkilemez
+    ↓
+sentReplies.json güncellenir (privateReplySent, publicReplySent, publicReplyText)
     ↓
 Kullanıcı "Takip ettim ✅" butonuna basar
     ↓
@@ -102,9 +109,30 @@ POST /webhook/instagram
 replyBasedOnFollowStatus(igsid)
     ↓
 checkFollowStatus(igsid) → is_user_follow_business
-    ├─ true  → "İşte 🙌 Link burada" (normal DM)
+    ├─ true  → "İşte 🙌 Link burada: <PROMPT_LINK>" (normal DM)
     └─ false → "Henüz takip ettiğini göremiyorum 💥" + tekrar buton (normal DM)
 ```
+
+---
+
+## Public Comment Reply
+
+Trigger keyword içeren bir yorum geldiğinde sistem hem kullanıcıya DM akışını başlatır hem de aynı yoruma public olarak yanıt yazar. Public yanıt her seferinde 5 farklı varyasyondan random seçilir:
+
+- "Size ilettim 🙌"
+- "DM'den gönderdim 🚀"
+- "DM kutuna bıraktım, kontrol et 👀"
+- "Gönderdim, DM'ini kontrol et 🔥"
+
+Public reply başarısız olursa (örneğin API hatası veya yalnızca üst-level yorumlara reply yapılabilir kısıtı) hata loglanır ve DM akışı etkilenmez.
+
+---
+
+## Link Değiştirme
+
+Gönderilecek linki değiştirmek için kod değiştirmenize gerek yoktur:
+
+**Render → Environment → `PROMPT_LINK`** değerini güncelleyin ve servisi redeploy edin.
 
 ---
 
