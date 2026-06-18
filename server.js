@@ -356,19 +356,50 @@ async function handleCommentWebhook(commentData) {
 async function handleMessageWebhook(event) {
   console.log("📨 MESSAGE WEBHOOK RECEIVED:", JSON.stringify(event, null, 2));
 
+  if (event?.message?.is_echo) return;
+
   const senderId = event?.sender?.id;
   if (!senderId) return;
 
   const quickReplyPayload = event?.message?.quick_reply?.payload ?? "";
-  const messageText = (event?.message?.text ?? "").toLowerCase().trim();
+  const messageText = event?.message?.text ?? "";
+  const messageTextLower = messageText.toLowerCase().trim();
 
-  const isFollowCheck =
-    quickReplyPayload === "CHECK_FOLLOW" ||
-    messageText.includes("takip ettim");
-
-  if (isFollowCheck) {
+  // 1. Quick reply veya "takip ettim" → mevcut follow-check akışı
+  if (quickReplyPayload === "CHECK_FOLLOW") {
     await replyBasedOnFollowStatus(senderId);
+    return;
   }
+
+  if (messageTextLower.includes("takip ettim")) {
+    await replyBasedOnFollowStatus(senderId);
+    return;
+  }
+
+  // 2. DM trigger keyword → takip kontrolüne göre link veya follow-gate
+  if (includesTriggerKeyword(messageText)) {
+    console.log(`📲 DM TRIGGER DETECTED: ${messageText}`);
+    try {
+      const profile = await checkFollowStatus(senderId);
+      console.log(`📊 DM TRIGGER FOLLOW CHECK RESULT for ${senderId}`);
+
+      if (profile.is_user_follow_business === true) {
+        console.log(`✅ DM TRIGGER USER FOLLOWS, SENDING LINK → ${senderId}`);
+        await sendMessageToUser(
+          senderId,
+          `İşte 🙌 Link burada:\n\n${getPromptLink()}\n\nİşine yararsa takipte kalmayı unutma 🚀`
+        );
+      } else {
+        console.log(`➡️ DM TRIGGER USER DOES NOT FOLLOW, SENDING FOLLOW GATE → ${senderId}`);
+        await sendFollowGateMessageToUser(senderId);
+      }
+    } catch (err) {
+      console.error(`❌ DM trigger follow check error: ${err.message}`);
+    }
+    return;
+  }
+
+  console.log(`🚫 DM NO TRIGGER FOUND: ${messageText}`);
 }
 
 async function handlePostbackWebhook(event) {

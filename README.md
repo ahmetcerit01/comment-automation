@@ -83,12 +83,14 @@ App'in aşağıdaki izinlere sahip olduğundan emin olun:
 
 ## Akış Özeti
 
+### Yorum Akışı
+
 ```
-Kullanıcı yorum yazar ("prompt", "link", "site", "nasıl", "nasil")
+Kullanıcı yorum yazar ("prompt", "promt", "gönder", "atar mısın"…)
     ↓
 POST /webhook/instagram → handleCommentWebhook()
     ↓
-sentReplies.json kontrolü (aynı comment_id için tekrar işlem yapılmaz)
+sentReplies.json kontrolü (privateReplySent / publicReplySent bağımsız)
     ↓
 sendFollowGateMessageToComment(commentId)   ← private reply
     ├─ URL button template dener
@@ -96,22 +98,34 @@ sendFollowGateMessageToComment(commentId)   ← private reply
     ↓
 replyToComment(commentId, getRandomPublicReply())   ← public comment reply
     ├─ 5 varyasyondan random seçilir
-    └─ Hata → loglanır, DM akışını etkilemez
+    └─ Hata → publicReplySent=false kalır, sonraki trigger'da tekrar denenebilir
     ↓
-sentReplies.json güncellenir (privateReplySent, publicReplySent, publicReplyText)
+Kullanıcı "Takip ettim ✅" butonuna basar → follow-check akışı
+```
+
+### DM Akışı
+
+```
+Kullanıcı DM'den trigger kelime yazar ("prompt", "promt", "gönder"…)
     ↓
-Kullanıcı "Takip ettim ✅" butonuna basar
+POST /webhook/instagram → handleMessageWebhook()
     ↓
-POST /webhook/instagram
-    ├─ postback event  → handlePostbackWebhook()
-    └─ message event   → handleMessageWebhook()
-    ↓
-replyBasedOnFollowStatus(igsid)
+includesTriggerKeyword(messageText) → DM TRIGGER DETECTED
     ↓
 checkFollowStatus(igsid) → is_user_follow_business
-    ├─ true  → "İşte 🙌 Link burada: <PROMPT_LINK>" (normal DM)
-    └─ false → "Henüz takip ettiğini göremiyorum 💥" + tekrar buton (normal DM)
+    ├─ true  → "İşte 🙌 Link burada: <PROMPT_LINK>"
+    └─ false → sendFollowGateMessageToUser(igsid)
+                   ├─ URL button template dener
+                   └─ Hata → fallback text + "Takip ettim ✅" quick reply
+    ↓
+Kullanıcı "Takip ettim ✅" → follow-check akışı
+    ↓
+checkFollowStatus(igsid) → is_user_follow_business
+    ├─ true  → "İşte 🙌 Link burada: <PROMPT_LINK>"
+    └─ false → uyarı mesajı + tekrar buton
 ```
+
+> DM akışında public comment reply çalışmaz. Kullanıcı DM'den tekrar trigger kelime yazarsa takip durumu yeniden kontrol edilir (duplicate engeli yoktur).
 
 ---
 
