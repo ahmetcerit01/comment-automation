@@ -8,6 +8,8 @@ import { loadEditConfig, readiness } from "./lib/edit-campaign/config.js";
 import { createGraphClient } from "./lib/edit-campaign/graph.js";
 import { verifySignature, safeEqual } from "./lib/edit-campaign/signature.js";
 import { JsonStore } from "./lib/edit-campaign/store.js";
+import { findMediaByShortcode } from "./lib/edit-campaign/media.js";
+import { backfillEditComments } from "./lib/edit-campaign/backfill.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -846,6 +848,57 @@ app.get("/admin/edit-campaign", async (req, res) => {
     }
   }
   res.json(report);
+});
+
+function requireAdmin(req, res) {
+  if (!editConfig.adminToken) return res.sendStatus(404), false;
+  if (!safeEqual(req.get("x-admin-token"), editConfig.adminToken)) return res.sendStatus(401), false;
+  return true;
+}
+
+// Shortcode → gerçek Media ID (ör. /admin/edit-campaign/find-media?shortcode=De3y0gdJtyI)
+app.get("/admin/edit-campaign/find-media", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    const graph = createGraphClient({ accessToken: editConfig.accessToken });
+    res.json(await findMediaByShortcode(graph, String(req.query.shortcode ?? "")));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Kampanya aktif olmadan önce gelen EDIT yorumlarını işle. Varsayılan dryRun=1 (hiçbir şey göndermez);
+// gerçek gönderim için ?send=1. Yalnızca kampanya hazırsa (live) çalışır.
+app.post("/admin/edit-campaign/backfill", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const { ready, problems } = readiness(editConfig);
+  const dryRun = req.query.send !== "1";
+  if (!ready && !dryRun) return res.status(409).json({ error: "campaign not live", problems });
+  try {
+    const graph = createGraphClient({ accessToken: editConfig.accessToken });
+    const me = await graph.get("/me?fields=user_id,username");
+    const sent = loadSentReplies();
+    const before = editStore.summary().stats;
+    const result = await backfillEditComments({
+      graph,
+      campaign: editCampaign,
+      mediaId: editConfig.mediaId,
+      ownUsername: me?.username,
+      alreadyRepliedLegacy: (id) => Boolean(sent[id]?.privateReplySent),
+      dryRun,
+    });
+    if (!dryRun) {
+      await Promise.race([editCampaign.idle(), new Promise((r) => setTimeout(r, 90000))]);
+      const after = editStore.summary().stats;
+      result.dm_success = after.dm_success - before.dm_success;
+      result.dm_failed = after.dm_failed - before.dm_failed;
+      result.duplicate_webhooks = after.duplicate_webhooks - before.duplicate_webhooks;
+      result.queue_idle = true;
+    }
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 export { app, editCampaign, editStore, editConfig };

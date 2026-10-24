@@ -48,7 +48,7 @@ test("hazır olma kontrolü: eksik değişkenler sebep olarak listelenir", () =>
 
 test("DM metni belirtilen içeriği ve bağlantıyı taşır", () => {
   const t = buildDmText("https://cdn.site.io/a.pdf");
-  assert.match(t, /^🎬 Söz verdiğim Claude ile Video Edit Rehberi burada!/);
-  assert.match(t, /📘 Rehberi aç:\nhttps:\/\/cdn\.site\.io\/a\.pdf/);
-  assert.match(t, /İyi çalışmalar! 🚀$/);
+  assert.match(t, /^🎬 İşte söz verdiğim Claude ile Video Edit Rehberi!/);
+  assert.match(t, /📘 Ücretsiz rehber:\nhttps:\/\/cdn\.site\.io\/a\.pdf/);
+  assert.match(t, /etiketlemeyi unutma! 🚀$/);
 });
