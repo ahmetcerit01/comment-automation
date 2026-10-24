@@ -235,3 +235,38 @@ Bu endpoint herhangi bir token gerektirmez; doğrudan tarayıcıda açılabilir.
 - `sentReplies.json` aynı `comment_id` için tekrar private reply gönderilmesini engeller.
 - `is_echo: true` olan mesajlar (botun kendi mesajlarının echo'su) otomatik olarak yoksayılır.
 - Render free tier cold start olabilir; ilk istek ~30 sn gecikebilir.
+
+---
+
+## EDIT Kampanyası (`CLAUDE_REELS_EDIT_GUIDE`)
+
+Belirli bir Reels'ın yorumlarına **EDIT** yazan kullanıcıya, **takip zorunluluğu olmadan**, PDF rehberi private reply (DM) ile gönderilir; DM başarılı olursa yoruma `📩 Rehberi DM’den gönderdim!` cevabı yazılır.
+
+Kod: `lib/edit-campaign/` · Testler: `npm test` (Instagram'a gerçek istek atmaz)
+
+### Environment variables
+
+| Değişken | Zorunlu | Açıklama |
+|---|---|---|
+| `EDIT_CAMPAIGN_MEDIA_ID` | Evet | Reels'ın Graph API media ID'si. Boşsa kampanya **çalışmaz**. |
+| `EDIT_GUIDE_PDF_URL` | Evet | PDF'in herkese açık **https** bağlantısı. Boş / örnek / yerel ise hiçbir DM gönderilmez. |
+| `APP_SECRET` | Evet | Webhook imza doğrulaması (`X-Hub-Signature-256`). Tanımlıysa **tüm** webhook isteklerinde zorunlu olur. |
+| `ADMIN_TOKEN` | Önerilir | `GET /admin/edit-campaign` (header `x-admin-token`) durum/istatistik/token kontrolü. Boşsa uç kapalı (404). |
+| `DATA_DIR` | Önerilir | Kalıcı kayıt klasörü. Render'da **Persistent Disk** mount yolu (örn. `/var/data`). |
+| `EDIT_SEND_INTERVAL_MS` | Hayır | DM'ler arası bekleme (varsayılan 1200). |
+| `EDIT_PUBLIC_REPLY` | Hayır | `false` → yoruma cevap yazma. |
+
+### Davranış
+- Yalnızca `EDIT_CAMPAIGN_MEDIA_ID` gönderisinde çalışır; diğer gönderilerde EDIT hiçbir şey tetiklemez.
+- Eşleşme tam kelimedir, büyük/küçük harf ve noktalama fark etmez (`edit`, `Edit!`, `edit gönder`, `EDIT istiyorum`, `EDİT`); `edited`, `credit`, `editör` tetiklemez.
+- Kampanya Reels'ında EDIT içeren yorum **yalnızca** bu kampanyaya gider; eski takip kapılı akışa düşmez. EDIT içermeyen yorumlar (ör. `link`) eski akışla çalışmaya devam eder.
+- Aynı yorum için bir DM: kayıt gönderimden önce diske yazılır; yeniden başlatma ve tekrarlanan webhook ikinci DM üretmez; yarım kalanlar açılışta sürdürülür.
+- Geçici hatalar (5xx, ağ, rate limit) sınırlı yeniden denenir; izin/token hatası `lastAuthError` ile raporlanır.
+- Depoda kullanıcı ID'si, kullanıcı adı veya yorum metni tutulmaz; yalnızca yorum ID'si, durum ve sayaçlar (30 gün sonra silinir).
+
+### Canlıya alma sırası
+1. PDF'i yükle → `EDIT_GUIDE_PDF_URL`
+2. Reels'ı yayınla → media ID: `GET https://graph.instagram.com/v25.0/me/media?fields=id,permalink,media_product_type&access_token=...`
+3. Render env: `EDIT_CAMPAIGN_MEDIA_ID`, `EDIT_GUIDE_PDF_URL`, `APP_SECRET`, `ADMIN_TOKEN`, `DATA_DIR` (+ Persistent Disk)
+4. Deploy sonrası `GET /admin/edit-campaign` → `live: true`, `tokenCheck.ok: true`, `pdfCheck.ok: true`
+5. Test hesabıyla Reels'a `EDIT` yaz → DM ve cevap geldiğini doğrula

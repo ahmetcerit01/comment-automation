@@ -3,18 +3,39 @@ import express from "express";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { createEditCampaign } from "./lib/edit-campaign/campaign.js";
+import { loadEditConfig, readiness } from "./lib/edit-campaign/config.js";
+import { createGraphClient } from "./lib/edit-campaign/graph.js";
+import { verifySignature, safeEqual } from "./lib/edit-campaign/signature.js";
+import { JsonStore } from "./lib/edit-campaign/store.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-app.use(express.json());
+// Ham gövde, Meta imza doğrulaması (X-Hub-Signature-256) için saklanır
+app.use(
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
 
 const PORT = process.env.PORT || 3000;
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const YKS_PDF_LINK = process.env.YKS_PDF_LINK;
 const INSTAGRAM_PROFILE_URL = "https://www.instagram.com/ahmetcerit.ai/";
-const SENT_REPLIES_PATH = path.join(__dirname, "sentReplies.json");
+const SENT_REPLIES_PATH = process.env.SENT_REPLIES_PATH || path.join(__dirname, "sentReplies.json");
 const GRAPH_API = "https://graph.instagram.com/v25.0";
+
+// ---------- EDIT kampanyası (CLAUDE_REELS_EDIT_GUIDE) ----------
+const editConfig = loadEditConfig(process.env, __dirname);
+const editStore = new JsonStore(editConfig.dataFile);
+const editCampaign = createEditCampaign({
+  config: editConfig,
+  store: editStore,
+  graph: createGraphClient({ accessToken: editConfig.accessToken }),
+});
 
 const TRIGGER_KEYWORDS = [
   "prompt",
@@ -579,7 +600,7 @@ app.get("/webhook/instagram", (req, res) => {
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  console.log("🔐 Webhook verification request:", { mode, token, challenge });
+  console.log("🔐 Webhook verification request:", { mode }); // verify token loglanmaz
 
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
     console.log("✅ Webhook verified");
@@ -593,6 +614,12 @@ app.get("/webhook/instagram", (req, res) => {
 // ---------- Webhook POST — events ----------
 
 app.post("/webhook/instagram", async (req, res) => {
+  // APP_SECRET tanımlıysa imza zorunlu: imzasız/yanlış imzalı istekler işlenmez
+  if (editConfig.appSecret && !verifySignature(req.rawBody, req.get("x-hub-signature-256"), editConfig.appSecret)) {
+    console.error("🚫 WEBHOOK_SIGNATURE_INVALID — request rejected");
+    return res.sendStatus(401);
+  }
+
   const body = req.body;
   console.log("📩 Incoming webhook payload:", JSON.stringify(body, null, 2));
 
@@ -613,6 +640,15 @@ app.post("/webhook/instagram", async (req, res) => {
         commentData?.item === "comment";
 
       if (isComment) {
+        // EDIT kampanyası kendi Reels'ında önceliklidir; eşleşirse eski (takip kapılı) akışa gitmez
+        const handledByEdit = await editCampaign
+          .handleComment(entry?.id, commentData)
+          .catch((err) => {
+            console.error("❌ editCampaign.handleComment error:", err.message);
+            return false;
+          });
+        if (handledByEdit) continue;
+
         await handleCommentWebhook(commentData).catch((err) =>
           console.error("❌ handleCommentWebhook error:", err.message)
         );
@@ -773,9 +809,59 @@ app.get("/", (req, res) => {
     status: "ok",
     service: "instagram-comment-automation",
     yksPdfConfigured: Boolean(YKS_PDF_LINK),
+    editCampaignLive: readiness(editConfig).ready,
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+// ---------- EDIT kampanyası durum raporu (ADMIN_TOKEN ile korunur) ----------
+
+app.get("/admin/edit-campaign", async (req, res) => {
+  if (!editConfig.adminToken) return res.sendStatus(404);
+  if (!safeEqual(req.get("x-admin-token"), editConfig.adminToken)) return res.sendStatus(401);
+
+  const { ready, problems } = readiness(editConfig);
+  const report = {
+    campaign: editConfig.name,
+    live: ready,
+    problems,
+    mediaIdConfigured: Boolean(editConfig.mediaId),
+    ...editCampaign.summary(),
+  };
+
+  // Token ve izin kontrolü (token'ın kendisi asla dönmez)
+  try {
+    const me = await createGraphClient({ accessToken: editConfig.accessToken }).get("/me?fields=user_id,username");
+    report.tokenCheck = { ok: true, username: me?.username ?? null };
+  } catch (err) {
+    report.tokenCheck = { ok: false, code: err.code ?? null, authProblem: Boolean(err.authProblem) };
+  }
+
+  // PDF bağlantısı erişilebilir mi?
+  if (editConfig.pdfUrl) {
+    try {
+      const head = await fetch(editConfig.pdfUrl, { method: "HEAD", redirect: "follow", signal: AbortSignal.timeout(10000) });
+      report.pdfCheck = { ok: head.ok, status: head.status, contentType: head.headers.get("content-type") };
+    } catch {
+      report.pdfCheck = { ok: false, status: null };
+    }
+  }
+  res.json(report);
 });
+
+export { app, editCampaign, editStore, editConfig };
+
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    const { ready, problems } = readiness(editConfig);
+    console.log(
+      ready
+        ? `🎬 EDIT campaign LIVE (media ${editConfig.mediaId})`
+        : `🎬 EDIT campaign NOT LIVE: ${problems.join("; ")}`
+    );
+    if (!editStore.persistent) console.warn("⚠️  EDIT store is not persistent (DATA_DIR not writable)");
+    const resumed = editCampaign.resumePending();
+    if (resumed) console.log(`🎬 EDIT: ${resumed} pending DM(s) resumed`);
+  });
+}
