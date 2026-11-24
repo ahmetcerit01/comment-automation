@@ -24,12 +24,19 @@ Object.assign(process.env, {
 
 const realFetch = globalThis.fetch;
 const graphCalls = [];
+let following = false;
 globalThis.fetch = async (url, init) => {
   const u = String(url);
   if (u.startsWith("http://127.0.0.1")) return realFetch(url, init);
+  if (u.endsWith("/api/data")) return Response.json({
+    items: [{ id: "DgFhMq0sIbW", title: "Animasyon", published: true,
+      videoUrl: "https://www.instagram.com/reel/DgFhMq0sIbW/", prompt: "UYARLANABİLİR ÖRNEK PROMPT\n\nÖrnek metin" }],
+    automationRules: [{ itemId: "DgFhMq0sIbW", keyword: "video", enabled: true }],
+  });
   if (u.startsWith("https://graph.instagram.com")) {
     graphCalls.push({ url: u, body: init?.body ? JSON.parse(init.body) : null });
-    if (u.includes("is_user_follow_business")) return Response.json({ is_user_follow_business: false });
+    if (u.includes("is_user_follow_business")) return Response.json({ is_user_follow_business: following });
+    if (u.includes("/17900000000000002?")) return Response.json({ permalink: "https://www.instagram.com/reel/DgFhMq0sIbW/" });
     return Response.json({ ok: true });
   }
   throw new Error(`UNEXPECTED NETWORK CALL: ${u}`);
@@ -130,6 +137,26 @@ test("MEVCUT kampanyalar bozulmadı: YKS kelimesi eski akışa gider", async () 
   assert.match(JSON.stringify(msgCalls()[0]?.body), /YKS/);
 });
 
+test("site kuralındaki VIDEO yorumu takipten sonra ilgili kopyalanabilir promptu bir kez gönderir", async () => {
+  reset();
+  const media = "17900000000000002";
+  await post(commentEvent("site1", "Video gönder", media, "site-user"));
+  assert.equal(msgCalls().length, 1);
+  assert.match(JSON.stringify(msgCalls()[0].body), /Takip ettim/);
+  following = true;
+  const followEvent = { object: "instagram", entry: [{ id: "ig_business", messaging: [{
+    sender: { id: "site-user" }, recipient: { id: "ig_business" },
+    message: { quick_reply: { payload: "CHECK_FOLLOW_PROMPT" }, text: "Takip ettim ✅" },
+  }] }] };
+  await post(followEvent);
+  assert.equal(msgCalls().length, 2);
+  assert.match(msgCalls()[1].body.message.text, /Örnek metin/);
+  assert.match(msgCalls()[1].body.message.text, /uyarlanabilir örnek prompt/);
+  await post(followEvent);
+  assert.equal(msgCalls().length, 2, "same prompt must not be sent twice");
+  following = false;
+});
+
 test("kendi hesabımızın yorumu işlenmez", async () => {
   reset();
   await post(commentEvent("self1", "EDIT", MEDIA, "ig_business"));
@@ -150,4 +177,5 @@ test("admin durum ucu: token olmadan 401, token ile rapor (gizli bilgi içermez)
 test("sağlık ucu kampanya durumunu gösterir", async () => {
   const body = await (await realFetch(`${base}/`)).json();
   assert.equal(body.editCampaignLive, true);
+  assert.equal(body.sitePromptIntegration, true);
 });

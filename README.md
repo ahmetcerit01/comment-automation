@@ -13,7 +13,7 @@ npm install
 ```
 ACCESS_TOKEN=<Instagram Graph API uzun ömürlü token>
 VERIFY_TOKEN=ahmet_prompt_bot_2026
-PROMPT_LINK=https://ai-prompt-hub-50231461829.europe-west2.run.app/
+SITE_URL=https://icerik-studyosu-121126.exuberantnectarine2.chatgpt.site
 PORT=3000
 ```
 
@@ -166,11 +166,11 @@ Public reply başarısız olursa (örneğin API hatası veya yalnızca üst-leve
 
 ---
 
-## Link Değiştirme
+## Site promptları
 
-Gönderilecek linki değiştirmek için kod değiştirmenize gerek yoktur:
+Meta `comments` ve `messages` webhook'u bu botun Render adresinde kalır. Bot, yorumun Reel kimliğini ve metnini kaydeder. Site yönetim panelindeki etkin Reel + anahtar kelime kuralı eşleşirse, takip doğrulandıktan sonra `/api/data` içindeki ilgili kopyalanabilir promptu DM olarak gönderir. Kural yoksa eski genel site bağlantısı gönderilir. `SITE_URL` başka bir site adresi gerektiğinde ayarlanabilir; varsayılan adres Ahmet Cerit'in yayındaki sitesidir. Eski `PROMPT_LINK` artık kullanılmaz. EDIT/PDF ve YKS kampanyaları kendi akışlarını korur.
 
-**Render → Environment → `PROMPT_LINK`** değerini güncelleyin ve servisi redeploy edin.
+Site promptları herkese açıktır; DM'deki takip kontrolü yalnızca otomasyon akışına uygulanır. Botun `/` sağlık ucunda `sitePromptIntegration: true` değeri dağıtımı doğrulamak için kullanılabilir.
 
 ---
 

@@ -10,6 +10,7 @@ import { verifySignature, safeEqual } from "./lib/edit-campaign/signature.js";
 import { JsonStore } from "./lib/edit-campaign/store.js";
 import { findMediaByShortcode } from "./lib/edit-campaign/media.js";
 import { backfillEditComments } from "./lib/edit-campaign/backfill.js";
+import { findSitePrompt, promptMessages, SITE_URL } from "./lib/site-prompts.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -97,7 +98,7 @@ const PUBLIC_REPLY_VARIATIONS = [
 ];
 
 function getPromptLink() {
-  return process.env.PROMPT_LINK || "https://ai-prompt-hub-50231461829.europe-west2.run.app/";
+  return process.env.SITE_URL || SITE_URL;
 }
 
 function getRandomPublicReply() {
@@ -260,6 +261,64 @@ function saveSentReplies(data) {
   fs.writeFileSync(SENT_REPLIES_PATH, JSON.stringify(data, null, 2));
 }
 
+function latestPromptRequest(igsid) {
+  const entries = Object.entries(loadSentReplies())
+    .filter(([, record]) => record.requestType === "prompt" && record.mediaId &&
+      [record.recipientId, record.commenterId].some((id) => String(id ?? "") === String(igsid)))
+    .sort(([, a], [, b]) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")));
+  return entries[0] ? { commentId: entries[0][0], ...entries[0][1] } : null;
+}
+
+async function matchesSitePrompt(mediaId, commentText) {
+  try {
+    return Boolean(await findSitePrompt(mediaId, {
+      accessToken: ACCESS_TOKEN,
+      commentText,
+      graphApi: GRAPH_API,
+      siteUrl: getPromptLink(),
+    }));
+  } catch (error) {
+    console.error("❌ SITE_PROMPT_LOOKUP_FAILED:", error.message);
+    return false;
+  }
+}
+
+async function sendSitePrompt(igsid) {
+  const request = latestPromptRequest(igsid);
+  if (!request) return false;
+  if (request.sitePromptDeliveryStartedAt) return true;
+
+  let item;
+  try {
+    item = await findSitePrompt(request.mediaId, {
+      accessToken: ACCESS_TOKEN,
+      commentText: request.commentText,
+      graphApi: GRAPH_API,
+      siteUrl: getPromptLink(),
+    });
+  } catch (error) {
+    console.error("❌ SITE_PROMPT_LOOKUP_FAILED:", error.message);
+    return false;
+  }
+  if (!item) return false;
+
+  const records = loadSentReplies();
+  if (!records[request.commentId] || records[request.commentId].sitePromptDeliveryStartedAt) return true;
+  records[request.commentId].sitePromptDeliveryStartedAt = new Date().toISOString();
+  saveSentReplies(records);
+  try {
+    for (const message of promptMessages(item)) await sendMessageToUser(igsid, message);
+    records[request.commentId].sitePromptDeliveredAt = new Date().toISOString();
+    saveSentReplies(records);
+    console.log(`✅ SITE_PROMPT_DELIVERED → comment ${request.commentId}`);
+  } catch (error) {
+    records[request.commentId].sitePromptError = error.message;
+    saveSentReplies(records);
+    throw error;
+  }
+  return true;
+}
+
 // ---------- Public comment reply ----------
 
 async function replyToComment(commentId, message) {
@@ -306,7 +365,7 @@ async function sendPrivateReplyToComment(commentId, messagePayload) {
 // Önce URL button template dener; hata alırsa fallback text + quick reply gönderir.
 async function sendFollowGateMessageToComment(commentId, resourceType = "prompt") {
   try {
-    await sendPrivateReplyToComment(commentId, {
+    const reply = await sendPrivateReplyToComment(commentId, {
       attachment: {
         type: "template",
         payload: {
@@ -328,14 +387,16 @@ async function sendFollowGateMessageToComment(commentId, resourceType = "prompt"
       },
     });
     console.log(`✅ PRIVATE REPLY SENT (button template) → comment ${commentId}`);
+    return reply;
   } catch (err) {
     console.error(`❌ Button template failed for private reply: ${err.message}`);
     try {
-      await sendPrivateReplyToComment(commentId, {
+      const reply = await sendPrivateReplyToComment(commentId, {
         text: `${getFollowGateText(resourceType)}\n\nProfili buradan aç:\n${INSTAGRAM_PROFILE_URL}\n\nTakip ettikten sonra aşağıdaki "Takip ettim ✅" butonuna bas.`,
         quick_replies: [getFollowCheckQuickReply(resourceType)],
       });
       console.log(`✅ FALLBACK MESSAGE SENT (private reply) → comment ${commentId}`);
+      return reply;
     } catch (fallbackErr) {
       console.error(`❌ Fallback private reply failed: ${fallbackErr.message}`);
     }
@@ -433,7 +494,9 @@ async function replyBasedOnFollowStatus(igsid, resourceType = "prompt") {
   const profile = await checkFollowStatus(igsid);
 
   if (profile.is_user_follow_business === true) {
-    await sendMessageToUser(igsid, getLinkMessage(resourceType));
+    if (resourceType !== "prompt" || !(await sendSitePrompt(igsid))) {
+      await sendMessageToUser(igsid, getLinkMessage(resourceType));
+    }
   } else {
     await callGraphAPI("/me/messages", {
       recipient: { id: igsid },
@@ -465,7 +528,8 @@ async function handleCommentWebhook(commentData) {
     return;
   }
 
-  const requestType = getRequestTypeFromText(commentText);
+  const requestType = getRequestTypeFromText(commentText) ||
+    ((await matchesSitePrompt(commentData?.media?.id, commentText)) ? "prompt" : null);
 
   if (!requestType) {
     console.log(`🚫 NO TRIGGER KEYWORD FOUND: ${commentText}`);
@@ -480,6 +544,9 @@ async function handleCommentWebhook(commentData) {
   if (!sentReplies[commentId]) {
     sentReplies[commentId] = {
       requestType,
+      commenterId: String(commenterId),
+      commentText: String(commentText),
+      mediaId: String(commentData?.media?.id ?? ""),
       privateReplySent: false,
       publicReplySent: false,
       publicReplyText: null,
@@ -489,6 +556,12 @@ async function handleCommentWebhook(commentData) {
   }
 
   const record = sentReplies[commentId];
+  if (!record.commenterId || !record.mediaId || !record.commentText) {
+    record.commenterId ||= String(commenterId);
+    record.commentText ||= String(commentText);
+    record.mediaId ||= String(commentData?.media?.id ?? "");
+    saveSentReplies(sentReplies);
+  }
 
   // 1. Private reply — daha önce gönderilmediyse
   if (!record.privateReplySent) {
@@ -496,7 +569,11 @@ async function handleCommentWebhook(commentData) {
     sentReplies[commentId].privateReplyMarkedAt = new Date().toISOString();
     saveSentReplies(sentReplies);
 
-    await sendFollowGateMessageToComment(commentId, requestType);
+    const reply = await sendFollowGateMessageToComment(commentId, requestType);
+    if (reply?.recipient_id) {
+      sentReplies[commentId].recipientId = String(reply.recipient_id);
+      saveSentReplies(sentReplies);
+    }
   } else {
     console.log(`⏭️  DUPLICATE_PRIVATE_REPLY_IGNORED → comment ${commentId}`);
   }
@@ -812,6 +889,7 @@ app.get("/", (req, res) => {
     service: "instagram-comment-automation",
     yksPdfConfigured: Boolean(YKS_PDF_LINK),
     editCampaignLive: readiness(editConfig).ready,
+    sitePromptIntegration: true,
   });
 });
 
