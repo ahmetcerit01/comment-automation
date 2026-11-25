@@ -168,6 +168,18 @@ test("site Reel'inde başka genel kelime aynı içeriği yanlışlıkla tetiklem
   assert.equal(msgCalls().length, 0);
 });
 
+test("Reel düğmesi bot yeniden başladıktan sonra da doğru bağlantıyı taşır", async () => {
+  reset();
+  following = true;
+  const event = { object: "instagram", entry: [{ id: "ig_business", messaging: [{
+    sender: { id: "fresh-user" }, recipient: { id: "ig_business" },
+    postback: { payload: "CHECK_FOLLOW_PROMPT:DgFhMq0sIbW" },
+  }] }] };
+  await post(event);
+  assert.match(msgCalls()[0].body.message.text, /\/icerik\/DgFhMq0sIbW/);
+  following = false;
+});
+
 test("geçmiş yorum taraması önce önizler; yalnızca Reel anahtar kelimesi olan yorumu bir kez gönderir", async () => {
   reset();
   const route = `${base}/admin/site-comments/backfill?shortcode=DgFhMq0sIbW`;

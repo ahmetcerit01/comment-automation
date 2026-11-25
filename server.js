@@ -163,22 +163,26 @@ function getRequestTypeFromText(text) {
   return null;
 }
 
-function getFollowCheckPayload(resourceType = "prompt") {
-  return resourceType === "yks" ? "CHECK_FOLLOW_YKS" : "CHECK_FOLLOW_PROMPT";
+function getFollowCheckPayload(resourceType = "prompt", itemId = "") {
+  return resourceType === "yks" ? "CHECK_FOLLOW_YKS" : itemId ? `CHECK_FOLLOW_PROMPT:${itemId}` : "CHECK_FOLLOW_PROMPT";
 }
 
-function getFollowCheckQuickReply(resourceType = "prompt") {
+function getFollowCheckQuickReply(resourceType = "prompt", itemId = "") {
   return {
     content_type: "text",
     title: "Takip ettim ✅",
-    payload: getFollowCheckPayload(resourceType),
+    payload: getFollowCheckPayload(resourceType, itemId),
   };
 }
 
-function getFollowQuickReplies(resourceType = "prompt") {
-  return [getFollowCheckQuickReply(resourceType), {
-    content_type: "text", title: "Zaten takipteyim", payload: getFollowCheckPayload(resourceType),
+function getFollowQuickReplies(resourceType = "prompt", itemId = "") {
+  return [getFollowCheckQuickReply(resourceType, itemId), {
+    content_type: "text", title: "Zaten takipteyim", payload: getFollowCheckPayload(resourceType, itemId),
   }];
+}
+
+function followPayloadItem(payload) {
+  return /^CHECK_FOLLOW_PROMPT:([A-Za-z0-9_-]{11})$/.exec(String(payload || ""))?.[1] || "";
 }
 
 function getFollowGateText(resourceType = "prompt") {
@@ -375,7 +379,7 @@ async function sendPrivateReplyToComment(commentId, messagePayload) {
 
 // Yoruma follow-gate mesajını private reply olarak gönderir.
 // Önce URL button template dener; hata alırsa fallback text + quick reply gönderir.
-async function sendFollowGateMessageToComment(commentId, resourceType = "prompt") {
+async function sendFollowGateMessageToComment(commentId, resourceType = "prompt", itemId = "") {
   try {
     const reply = await sendPrivateReplyToComment(commentId, {
       attachment: {
@@ -392,12 +396,12 @@ async function sendFollowGateMessageToComment(commentId, resourceType = "prompt"
             {
               type: "postback",
               title: "Takip ettim ✅",
-              payload: getFollowCheckPayload(resourceType),
+              payload: getFollowCheckPayload(resourceType, itemId),
             },
             {
               type: "postback",
               title: "Zaten takipteyim",
-              payload: getFollowCheckPayload(resourceType),
+              payload: getFollowCheckPayload(resourceType, itemId),
             },
           ],
         },
@@ -410,7 +414,7 @@ async function sendFollowGateMessageToComment(commentId, resourceType = "prompt"
     try {
       const reply = await sendPrivateReplyToComment(commentId, {
         text: `${getFollowGateText(resourceType)}\n\nProfili buradan aç:\n${INSTAGRAM_PROFILE_URL}\n\nTakip ettikten sonra aşağıdaki "Takip ettim ✅" butonuna bas.`,
-        quick_replies: getFollowQuickReplies(resourceType),
+        quick_replies: getFollowQuickReplies(resourceType, itemId),
       });
       console.log(`✅ FALLBACK MESSAGE SENT (private reply) → comment ${commentId}`);
       return reply;
@@ -510,13 +514,15 @@ async function checkFollowStatus(igsid) {
 }
 
 // Takip durumuna göre link ya da uyarı mesajı gönderir
-async function replyBasedOnFollowStatus(igsid, resourceType = "prompt") {
+async function replyBasedOnFollowStatus(igsid, resourceType = "prompt", itemId = "") {
   if (!isSafeRecipientId(igsid)) return;
 
   const profile = await checkFollowStatus(igsid);
 
   if (profile.is_user_follow_business === true) {
-    if (resourceType !== "prompt" || !(await sendSitePrompt(igsid))) {
+    if (itemId) {
+      await sendMessageToUser(igsid, `İstediğin içerik burada 👇\n\n${getPromptLink().replace(/\/$/, "")}/icerik/${itemId}\n\nSkill ve promptu sayfadan kopyalayabilirsin. Bu otomatik bir mesajdır.`);
+    } else if (resourceType !== "prompt" || !(await sendSitePrompt(igsid))) {
       await sendMessageToUser(igsid, getLinkMessage(resourceType));
     }
   } else {
@@ -524,7 +530,7 @@ async function replyBasedOnFollowStatus(igsid, resourceType = "prompt") {
       recipient: { id: igsid },
       message: {
         text: `Henüz takip ettiğini göremiyorum 💥\n\nÖnce profili takip et, sonra tekrar "Takip ettim ✅" butonuna bas.`,
-        quick_replies: getFollowQuickReplies(resourceType),
+        quick_replies: getFollowQuickReplies(resourceType, itemId),
       },
     });
     console.log(`✅ NORMAL DM SENT (not following — retry prompt) → ${igsid}`);
@@ -591,7 +597,7 @@ async function handleCommentWebhook(commentData) {
     sentReplies[commentId].privateReplyMarkedAt = new Date().toISOString();
     saveSentReplies(sentReplies);
 
-    const reply = await sendFollowGateMessageToComment(commentId, requestType);
+    const reply = await sendFollowGateMessageToComment(commentId, requestType, site.match?.id || "");
     if (reply?.recipient_id) {
       sentReplies[commentId].recipientId = String(reply.recipient_id);
       saveSentReplies(sentReplies);
@@ -637,8 +643,8 @@ async function handleMessageWebhook(event) {
   const messageTextLower = messageText.toLowerCase().trim();
 
   // 1. Quick reply veya "takip ettim" → mevcut follow-check akışı
-  if (quickReplyPayload === "CHECK_FOLLOW" || quickReplyPayload === "CHECK_FOLLOW_PROMPT") {
-    await replyBasedOnFollowStatus(senderId, "prompt");
+  if (quickReplyPayload === "CHECK_FOLLOW" || quickReplyPayload === "CHECK_FOLLOW_PROMPT" || followPayloadItem(quickReplyPayload)) {
+    await replyBasedOnFollowStatus(senderId, "prompt", followPayloadItem(quickReplyPayload));
     return;
   }
 
@@ -686,8 +692,8 @@ async function handlePostbackWebhook(event) {
   const senderId = event?.sender?.id;
   const payload = event?.postback?.payload ?? "";
 
-  if (payload === "CHECK_FOLLOW" || payload === "CHECK_FOLLOW_PROMPT") {
-    await replyBasedOnFollowStatus(senderId, "prompt");
+  if (payload === "CHECK_FOLLOW" || payload === "CHECK_FOLLOW_PROMPT" || followPayloadItem(payload)) {
+    await replyBasedOnFollowStatus(senderId, "prompt", followPayloadItem(payload));
     return;
   }
 
