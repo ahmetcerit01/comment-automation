@@ -8,6 +8,8 @@ import os from "os";
 import path from "path";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "edit-int-"));
+const originalLog = console.log;
+console.log = () => {};
 const MEDIA = "17900000000000001";
 const SECRET = "test_app_secret";
 Object.assign(process.env, {
@@ -54,7 +56,7 @@ before(async () => {
   await new Promise((r) => (server = app.listen(0, "127.0.0.1", r)));
   base = `http://127.0.0.1:${server.address().port}`;
 });
-after(() => server.close());
+after(() => { console.log = originalLog; server.close(); });
 
 const sign = (raw) => "sha256=" + crypto.createHmac("sha256", SECRET).update(raw).digest("hex");
 async function post(payload, { signature } = {}) {
