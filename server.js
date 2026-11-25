@@ -10,7 +10,7 @@ import { verifySignature, safeEqual } from "./lib/edit-campaign/signature.js";
 import { JsonStore } from "./lib/edit-campaign/store.js";
 import { findMediaByShortcode } from "./lib/edit-campaign/media.js";
 import { backfillEditComments } from "./lib/edit-campaign/backfill.js";
-import { findSitePrompt, promptMessages, SITE_URL } from "./lib/site-prompts.js";
+import { findSitePrompt, resolveSiteAutomation, keywordMatches, SITE_URL } from "./lib/site-prompts.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -28,7 +28,7 @@ const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const YKS_PDF_LINK = process.env.YKS_PDF_LINK;
 const INSTAGRAM_PROFILE_URL = "https://www.instagram.com/ahmetcerit.ai/";
-const SENT_REPLIES_PATH = process.env.SENT_REPLIES_PATH || path.join(__dirname, "sentReplies.json");
+const SENT_REPLIES_PATH = process.env.SENT_REPLIES_PATH || path.join(process.env.DATA_DIR || __dirname, "sentReplies.json");
 const GRAPH_API = "https://graph.instagram.com/v25.0";
 
 // ---------- EDIT kampanyası (CLAUDE_REELS_EDIT_GUIDE) ----------
@@ -91,10 +91,16 @@ const YKS_TRIGGER_KEYWORDS = [
 ];
 
 const PUBLIC_REPLY_VARIATIONS = [
-  "Size ilettim 🙌",
-  "DM'den gönderdim 🚀",
-  "DM kutuna bıraktım, kontrol et 👀",
-  "Gönderdim, DM'ini kontrol et 🔥",
+  "Mesaj olarak gönderdim, geldi mi? 👀",
+  "DM kutuna bıraktım, bir bakar mısın? 🙌",
+  "Özel mesajını kontrol et, ilettim ✨",
+  "İstediğin bağlantı için DM attım, ulaştı mı? 🚀",
+  "Mesajını gönderdim, gelen kutuna bakabilirsin 💬",
+  "DM'de buluşalım, mesajı yolladım 👋",
+  "Özel mesajı ilettim, görebildin mi? 👀",
+  "Bağlantı için sana mesaj attım, geldi mi? ✨",
+  "İstediğin içeriği DM'den ilettim 🙌",
+  "Mesaj kutunu kontrol eder misin? Gönderdim 💙",
 ];
 
 function getPromptLink() {
@@ -169,12 +175,18 @@ function getFollowCheckQuickReply(resourceType = "prompt") {
   };
 }
 
+function getFollowQuickReplies(resourceType = "prompt") {
+  return [getFollowCheckQuickReply(resourceType), {
+    content_type: "text", title: "Zaten takipteyim", payload: getFollowCheckPayload(resourceType),
+  }];
+}
+
 function getFollowGateText(resourceType = "prompt") {
   if (resourceType === "yks") {
     return "Selamlar 👋 YKS son tekrar PDF’ini göndermem için önce profili takip etmen gerekiyor 👇";
   }
 
-  return "Selamlar, linki göndermem için önce profili takip etmen gerekiyor 👇";
+  return "Selam 👋 İstediğin bağlantı hazır. @ahmetcerit.ai hesabını takip ediyorsan aşağıdan belirt; değilse önce profili açıp takip et. Takip durumunu kontrol edip bağlantıyı göndereceğim.";
 }
 
 function getLinkMessage(resourceType = "prompt") {
@@ -271,15 +283,15 @@ function latestPromptRequest(igsid) {
 
 async function matchesSitePrompt(mediaId, commentText) {
   try {
-    return Boolean(await findSitePrompt(mediaId, {
+    return await resolveSiteAutomation(mediaId, {
       accessToken: ACCESS_TOKEN,
       commentText,
       graphApi: GRAPH_API,
       siteUrl: getPromptLink(),
-    }));
+    });
   } catch (error) {
     console.error("❌ SITE_PROMPT_LOOKUP_FAILED:", error.message);
-    return false;
+    return { siteOwned: true, match: null };
   }
 }
 
@@ -307,7 +319,7 @@ async function sendSitePrompt(igsid) {
   records[request.commentId].sitePromptDeliveryStartedAt = new Date().toISOString();
   saveSentReplies(records);
   try {
-    for (const message of promptMessages(item)) await sendMessageToUser(igsid, message);
+    await sendMessageToUser(igsid, `İstediğin içerik burada 👇\n\n${getPromptLink().replace(/\/$/, "")}/icerik/${item.id}\n\nSayfadaki skill ve promptu kopyalayabilirsin. Bu otomatik bir mesajdır.`);
     records[request.commentId].sitePromptDeliveredAt = new Date().toISOString();
     saveSentReplies(records);
     console.log(`✅ SITE_PROMPT_DELIVERED → comment ${request.commentId}`);
@@ -382,6 +394,11 @@ async function sendFollowGateMessageToComment(commentId, resourceType = "prompt"
               title: "Takip ettim ✅",
               payload: getFollowCheckPayload(resourceType),
             },
+            {
+              type: "postback",
+              title: "Zaten takipteyim",
+              payload: getFollowCheckPayload(resourceType),
+            },
           ],
         },
       },
@@ -393,7 +410,7 @@ async function sendFollowGateMessageToComment(commentId, resourceType = "prompt"
     try {
       const reply = await sendPrivateReplyToComment(commentId, {
         text: `${getFollowGateText(resourceType)}\n\nProfili buradan aç:\n${INSTAGRAM_PROFILE_URL}\n\nTakip ettikten sonra aşağıdaki "Takip ettim ✅" butonuna bas.`,
-        quick_replies: [getFollowCheckQuickReply(resourceType)],
+        quick_replies: getFollowQuickReplies(resourceType),
       });
       console.log(`✅ FALLBACK MESSAGE SENT (private reply) → comment ${commentId}`);
       return reply;
@@ -439,6 +456,11 @@ async function sendButtonTemplateToUser(igsid, resourceType = "prompt") {
               title: "Takip ettim ✅",
               payload: getFollowCheckPayload(resourceType),
             },
+            {
+              type: "postback",
+              title: "Zaten takipteyim",
+              payload: getFollowCheckPayload(resourceType),
+            },
           ],
         },
       },
@@ -461,7 +483,7 @@ async function sendFollowGateMessageToUser(igsid, resourceType = "prompt") {
         recipient: { id: igsid },
         message: {
           text: `${getFollowGateText(resourceType)}\n\nProfili buradan aç:\n${INSTAGRAM_PROFILE_URL}\n\nTakip ettikten sonra aşağıdaki "Takip ettim ✅" butonuna bas.`,
-          quick_replies: [getFollowCheckQuickReply(resourceType)],
+          quick_replies: getFollowQuickReplies(resourceType),
         },
       });
       console.log(`✅ FALLBACK MESSAGE SENT → ${igsid}`);
@@ -502,7 +524,7 @@ async function replyBasedOnFollowStatus(igsid, resourceType = "prompt") {
       recipient: { id: igsid },
       message: {
         text: `Henüz takip ettiğini göremiyorum 💥\n\nÖnce profili takip et, sonra tekrar "Takip ettim ✅" butonuna bas.`,
-        quick_replies: [getFollowCheckQuickReply(resourceType)],
+        quick_replies: getFollowQuickReplies(resourceType),
       },
     });
     console.log(`✅ NORMAL DM SENT (not following — retry prompt) → ${igsid}`);
@@ -518,8 +540,8 @@ async function handleCommentWebhook(commentData) {
   const commentText = commentData?.text ?? "";
   const commenterId = commentData?.from?.id;
 
-  if (!commenterId || !commentId) {
-    console.log("⚠️  Missing commenterId or commentId, skipping");
+  if (!commentId || !commentData?.media?.id) {
+    console.log("⚠️  Missing comment or media ID, skipping");
     return;
   }
 
@@ -528,8 +550,8 @@ async function handleCommentWebhook(commentData) {
     return;
   }
 
-  const requestType = getRequestTypeFromText(commentText) ||
-    ((await matchesSitePrompt(commentData?.media?.id, commentText)) ? "prompt" : null);
+  const site = await matchesSitePrompt(commentData.media.id, commentText);
+  const requestType = site.match ? "prompt" : site.siteOwned ? null : getRequestTypeFromText(commentText);
 
   if (!requestType) {
     console.log(`🚫 NO TRIGGER KEYWORD FOUND: ${commentText}`);
@@ -544,7 +566,7 @@ async function handleCommentWebhook(commentData) {
   if (!sentReplies[commentId]) {
     sentReplies[commentId] = {
       requestType,
-      commenterId: String(commenterId),
+      commenterId: String(commenterId || ""),
       commentText: String(commentText),
       mediaId: String(commentData?.media?.id ?? ""),
       privateReplySent: false,
@@ -557,7 +579,7 @@ async function handleCommentWebhook(commentData) {
 
   const record = sentReplies[commentId];
   if (!record.commenterId || !record.mediaId || !record.commentText) {
-    record.commenterId ||= String(commenterId);
+    record.commenterId ||= String(commenterId || "");
     record.commentText ||= String(commentText);
     record.mediaId ||= String(commentData?.media?.id ?? "");
     saveSentReplies(sentReplies);
@@ -574,6 +596,9 @@ async function handleCommentWebhook(commentData) {
       sentReplies[commentId].recipientId = String(reply.recipient_id);
       saveSentReplies(sentReplies);
     }
+    if (!reply) return;
+    sentReplies[commentId].privateReplyDeliveredAt = new Date().toISOString();
+    saveSentReplies(sentReplies);
   } else {
     console.log(`⏭️  DUPLICATE_PRIVATE_REPLY_IGNORED → comment ${commentId}`);
   }
@@ -622,7 +647,7 @@ async function handleMessageWebhook(event) {
     return;
   }
 
-  if (messageTextLower.includes("takip ettim")) {
+  if (messageTextLower.includes("takip ettim") || messageTextLower.includes("zaten takip") || messageTextLower.includes("takipteyim")) {
     const requestType = getRequestTypeFromText(messageText) || "prompt";
     await replyBasedOnFollowStatus(senderId, requestType);
     return;
@@ -976,6 +1001,51 @@ app.post("/admin/edit-campaign/backfill", async (req, res) => {
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Sonradan açılan Reel kurallarını, yalnızca aynı Reel'de son 7 günde yazılmış
+// ve henüz yanıtlanmamış yorumlara uygular. Sayfa başına en fazla 15 yorum.
+app.post("/admin/site-comments/backfill", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const shortcode = String(req.query.shortcode || "");
+  const after = String(req.query.after || "");
+  const send = req.query.send === "1";
+  if (!/^[A-Za-z0-9_-]{11}$/.test(shortcode) || (after && !/^[A-Za-z0-9_-]{1,200}$/.test(after))) {
+    return res.status(400).json({ error: "invalid shortcode or cursor" });
+  }
+  if (!ACCESS_TOKEN) return res.status(503).json({ error: "Instagram token missing" });
+  try {
+    const siteResponse = await fetch(new URL("/api/data", getPromptLink()), { signal: AbortSignal.timeout(8000) });
+    if (!siteResponse.ok) throw new Error(`Site data unavailable (${siteResponse.status})`);
+    const site = await siteResponse.json();
+    const item = site.items?.find((entry) => entry.id === shortcode && entry.published && entry.prompt?.trim());
+    const rules = site.automationRules?.filter((rule) => rule.enabled && rule.itemId === shortcode) || [];
+    if (!item || !rules.length) return res.status(409).json({ error: "No active rule and content for this Reel" });
+    const graph = createGraphClient({ accessToken: ACCESS_TOKEN });
+    const media = await findMediaByShortcode(graph, shortcode);
+    if (!media.found) return res.status(404).json({ error: "Reel not found on Instagram" });
+    const me = await graph.get("/me?fields=username");
+    const endpoint = `/${media.id}/comments?fields=id,text,timestamp,username,from,parent_id&limit=15${after ? `&after=${encodeURIComponent(after)}` : ""}`;
+    const page = await graph.get(endpoint);
+    const result = { shortcode, mediaId: media.id, scanned: 0, matched: 0, sent: 0, skipped: { old: 0, own: 0, reply: 0, duplicate: 0 }, dryRun: !send, nextCursor: page.paging?.cursors?.after || null, comments: [] };
+    for (const comment of page.data || []) {
+      result.scanned++;
+      if (!rules.some((rule) => keywordMatches(comment.text, rule.keyword))) continue;
+      result.matched++;
+      if (comment.parent_id) { result.skipped.reply++; continue; }
+      if (comment.username?.toLowerCase() === me.username?.toLowerCase()) { result.skipped.own++; continue; }
+      if (!comment.timestamp || Date.now() - Date.parse(comment.timestamp) > 6 * 24 * 60 * 60 * 1000) { result.skipped.old++; continue; }
+      if (loadSentReplies()[comment.id]?.privateReplySent) { result.skipped.duplicate++; continue; }
+      if (send) {
+        await handleCommentWebhook({ id: comment.id, text: comment.text, from: comment.from || {}, media: { id: media.id } });
+        if (loadSentReplies()[comment.id]?.privateReplyDeliveredAt) result.sent++;
+      }
+      result.comments.push({ id: comment.id, text: String(comment.text || "").slice(0, 120), username: comment.username || null, sent: send && Boolean(loadSentReplies()[comment.id]?.privateReplyDeliveredAt) });
+    }
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 

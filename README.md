@@ -168,7 +168,9 @@ Public reply başarısız olursa (örneğin API hatası veya yalnızca üst-leve
 
 ## Site promptları
 
-Meta `comments` ve `messages` webhook'u bu botun Render adresinde kalır. Bot, yorumun Reel kimliğini ve metnini kaydeder. Site yönetim panelindeki etkin Reel + anahtar kelime kuralı eşleşirse, takip doğrulandıktan sonra `/api/data` içindeki ilgili kopyalanabilir promptu DM olarak gönderir. Kural yoksa eski genel site bağlantısı gönderilir. `SITE_URL` başka bir site adresi gerektiğinde ayarlanabilir; varsayılan adres Ahmet Cerit'in yayındaki sitesidir. Eski `PROMPT_LINK` artık kullanılmaz. EDIT/PDF ve YKS kampanyaları kendi akışlarını korur.
+Meta `comments` ve `messages` webhook'u bu botun Render adresinde kalır. Bot, sitedeki her Reel için ayrı tanımlanan anahtar kelimeyi kontrol eder; başka Reel'e ait genel bir kelimeyi eşleşme saymaz. Önce özel mesajda profil bağlantısı ile “Takip ettim” ve “Zaten takipteyim” seçeneklerini sunar. Meta takip durumunu doğruladıktan sonra o Reel'in skill/prompt sayfasının bağlantısını gönderir. Özel mesaj başarılıysa yoruma 10 farklı kısa yanıttan biri yazılır. `SITE_URL` başka bir site adresi gerektiğinde ayarlanabilir; varsayılan adres Ahmet Cerit'in yayındaki sitesidir. EDIT/PDF ve YKS kampanyaları kendi akışlarını korur.
+
+Yeni kuraldan önce yazılan yorumlar için `POST /admin/site-comments/backfill?shortcode=<Reel kodu>` yönetici tokenıyla gönderimsiz önizleme yapar. `&send=1` eklenirse yalnızca son altı gündeki, anahtar kelimeyle eşleşen ve daha önce yanıtlanmamış yorumları işler. Sayfa başına 15 yorum taranır; `nextCursor` varsa `&after=<cursor>` ile devam edilir. Her yorum en fazla bir özel yanıt alır. Yanıt kayıtları `DATA_DIR/sentReplies.json` üzerinde tutulur; Render kalıcı disk yapılandırılmalıdır.
 
 Site promptları herkese açıktır; DM'deki takip kontrolü yalnızca otomasyon akışına uygulanır. Botun `/` sağlık ucunda `sitePromptIntegration: true` değeri dağıtımı doğrulamak için kullanılabilir.
 

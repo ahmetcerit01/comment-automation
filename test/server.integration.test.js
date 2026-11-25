@@ -36,6 +36,12 @@ globalThis.fetch = async (url, init) => {
   if (u.startsWith("https://graph.instagram.com")) {
     graphCalls.push({ url: u, body: init?.body ? JSON.parse(init.body) : null });
     if (u.includes("is_user_follow_business")) return Response.json({ is_user_follow_business: following });
+    if (u.includes("/me/media?")) return Response.json({ data: [{ id: "17900000000000002", permalink: "https://www.instagram.com/reel/DgFhMq0sIbW/" }] });
+    if (u.includes("/17900000000000002/comments?")) return Response.json({ data: [
+      { id: "backfill-1", text: "VIDEO lütfen", timestamp: new Date().toISOString(), username: "viewer", from: { id: "backfill-user" } },
+      { id: "backfill-2", text: "prompt", timestamp: new Date().toISOString(), username: "viewer2", from: { id: "other-user" } },
+    ] });
+    if (u.includes("/me?fields=username")) return Response.json({ username: "ahmetcerit.ai" });
     if (u.includes("/17900000000000002?")) return Response.json({ permalink: "https://www.instagram.com/reel/DgFhMq0sIbW/" });
     return Response.json({ ok: true });
   }
@@ -137,7 +143,7 @@ test("MEVCUT kampanyalar bozulmadı: YKS kelimesi eski akışa gider", async () 
   assert.match(JSON.stringify(msgCalls()[0]?.body), /YKS/);
 });
 
-test("site kuralındaki VIDEO yorumu takipten sonra ilgili kopyalanabilir promptu bir kez gönderir", async () => {
+test("site kuralındaki VIDEO yorumu takipten sonra ilgili Reel bağlantısını bir kez gönderir", async () => {
   reset();
   const media = "17900000000000002";
   await post(commentEvent("site1", "Video gönder", media, "site-user"));
@@ -150,11 +156,36 @@ test("site kuralındaki VIDEO yorumu takipten sonra ilgili kopyalanabilir prompt
   }] }] };
   await post(followEvent);
   assert.equal(msgCalls().length, 2);
-  assert.match(msgCalls()[1].body.message.text, /Örnek metin/);
-  assert.match(msgCalls()[1].body.message.text, /uyarlanabilir örnek prompt/);
+  assert.match(msgCalls()[1].body.message.text, /\/icerik\/DgFhMq0sIbW/);
   await post(followEvent);
   assert.equal(msgCalls().length, 2, "same prompt must not be sent twice");
   following = false;
+});
+
+test("site Reel'inde başka genel kelime aynı içeriği yanlışlıkla tetiklemez", async () => {
+  reset();
+  await post(commentEvent("site-no-match", "prompt", "17900000000000002", "another-user"));
+  assert.equal(msgCalls().length, 0);
+});
+
+test("geçmiş yorum taraması önce önizler; yalnızca Reel anahtar kelimesi olan yorumu bir kez gönderir", async () => {
+  reset();
+  const route = `${base}/admin/site-comments/backfill?shortcode=DgFhMq0sIbW`;
+  const headers = { "x-admin-token": "admin_test" };
+  let response = await realFetch(route, { method: "POST", headers });
+  assert.equal(response.status, 200);
+  let result = await response.json();
+  assert.equal(result.matched, 1);
+  assert.equal(result.sent, 0);
+  assert.equal(msgCalls().length, 0);
+  response = await realFetch(route + "&send=1", { method: "POST", headers });
+  result = await response.json();
+  assert.equal(result.sent, 1);
+  assert.equal(msgCalls().length, 1);
+  response = await realFetch(route + "&send=1", { method: "POST", headers });
+  result = await response.json();
+  assert.equal(result.skipped.duplicate, 1);
+  assert.equal(msgCalls().length, 1);
 });
 
 test("kendi hesabımızın yorumu işlenmez", async () => {
