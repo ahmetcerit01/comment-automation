@@ -30,6 +30,7 @@ const YKS_PDF_LINK = process.env.YKS_PDF_LINK;
 const INSTAGRAM_PROFILE_URL = "https://www.instagram.com/ahmetcerit.ai/";
 const SENT_REPLIES_PATH = process.env.SENT_REPLIES_PATH || path.join(process.env.DATA_DIR || __dirname, "sentReplies.json");
 const GRAPH_API = "https://graph.instagram.com/v25.0";
+let lastInvalidWebhookLog = 0;
 
 // ---------- EDIT kampanyası (CLAUDE_REELS_EDIT_GUIDE) ----------
 const editConfig = loadEditConfig(process.env, __dirname);
@@ -726,7 +727,14 @@ app.get("/webhook/instagram", (req, res) => {
 app.post("/webhook/instagram", async (req, res) => {
   // APP_SECRET tanımlıysa imza zorunlu: imzasız/yanlış imzalı istekler işlenmez
   if (editConfig.appSecret && !verifySignature(req.rawBody, req.get("x-hub-signature-256"), editConfig.appSecret)) {
-    console.error("🚫 WEBHOOK_SIGNATURE_INVALID — request rejected");
+    if (Date.now() - lastInvalidWebhookLog > 15000) {
+      lastInvalidWebhookLog = Date.now();
+      console.error("🚫 WEBHOOK_SIGNATURE_INVALID — request rejected", {
+        signaturePresent: Boolean(req.get("x-hub-signature-256")),
+        userAgent: String(req.get("user-agent") || "").slice(0, 80),
+        contentType: String(req.get("content-type") || "").slice(0, 80),
+      });
+    }
     return res.sendStatus(401);
   }
 
