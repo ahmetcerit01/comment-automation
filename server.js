@@ -11,6 +11,7 @@ import { JsonStore } from "./lib/edit-campaign/store.js";
 import { findMediaByShortcode } from "./lib/edit-campaign/media.js";
 import { backfillEditComments } from "./lib/edit-campaign/backfill.js";
 import { findSitePrompt, resolveSiteAutomation, keywordMatches, SITE_URL } from "./lib/site-prompts.js";
+import { resolveAnimationCampaign } from "./lib/animation-campaign.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -165,7 +166,7 @@ function getRequestTypeFromText(text) {
 }
 
 function getFollowCheckPayload(resourceType = "prompt", itemId = "") {
-  return resourceType === "yks" ? "CHECK_FOLLOW_YKS" : itemId ? `CHECK_FOLLOW_PROMPT:${itemId}` : "CHECK_FOLLOW_PROMPT";
+  return resourceType === "yks" ? "CHECK_FOLLOW_YKS" : resourceType === "animation" ? "CHECK_FOLLOW_ANIMATION" : itemId ? `CHECK_FOLLOW_PROMPT:${itemId}` : "CHECK_FOLLOW_PROMPT";
 }
 
 function getFollowCheckQuickReply(resourceType = "prompt", itemId = "") {
@@ -191,6 +192,10 @@ function getFollowGateText(resourceType = "prompt") {
     return "Selamlar 👋 YKS son tekrar PDF’ini göndermem için önce profili takip etmen gerekiyor 👇";
   }
 
+  if (resourceType === "animation") {
+    return "Selam 👋 Animasyon skill'i ve rehberin hazır. @ahmetcerit.ai hesabını takip ediyorsan aşağıdan belirt; değilse önce profili açıp takip et. Sonra indirme bağlantısını göndereceğim.";
+  }
+
   return "Selam 👋 İstediğin bağlantı hazır. @ahmetcerit.ai hesabını takip ediyorsan aşağıdan belirt; değilse önce profili açıp takip et. Takip durumunu kontrol edip bağlantıyı göndereceğim.";
 }
 
@@ -201,6 +206,10 @@ function getLinkMessage(resourceType = "prompt") {
     }
 
     return `Harika, PDF burada 👇\n\n📘 YKS Son Tekrar Türkçe Denemesi:\n${YKS_PDF_LINK}\n\nSınava girecek bir arkadaşın varsa ona da göndermeyi unutma. Başarılar 🚀`;
+  }
+
+  if (resourceType === "animation") {
+    return `İstediğin animasyon skill'i ve adım adım rehber burada 👇\n\n${getPromptLink().replace(/\/$/, "")}/animasyon\n\nSayfadaki ZIP ve rehberi ücretsiz indirebilirsin. Bu otomatik bir mesajdır.`;
   }
 
   return `İşte 🙌 Link burada:\n\n${getPromptLink()}\n\nİşine yararsa takipte kalmayı unutma 🚀`;
@@ -284,6 +293,14 @@ function latestPromptRequest(igsid) {
       [record.recipientId, record.commenterId].some((id) => String(id ?? "") === String(igsid)))
     .sort(([, a], [, b]) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")));
   return entries[0] ? { commentId: entries[0][0], ...entries[0][1] } : null;
+}
+
+function latestRequestType(igsid) {
+  const entries = Object.values(loadSentReplies())
+    .filter((record) => [record.recipientId, record.commenterId]
+      .some((id) => String(id ?? "") === String(igsid)))
+    .sort((a, b) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")));
+  return entries[0]?.requestType || null;
 }
 
 async function matchesSitePrompt(mediaId, commentText) {
@@ -557,8 +574,17 @@ async function handleCommentWebhook(commentData) {
     return;
   }
 
-  const site = await matchesSitePrompt(commentData.media.id, commentText);
-  const requestType = site.match ? "prompt" : site.siteOwned ? null : getRequestTypeFromText(commentText);
+  let animation = { campaignOwned: false, match: false };
+  if (keywordMatches(commentText, "animasyon")) {
+    try {
+      animation = await resolveAnimationCampaign(commentData.media.id, commentText, { accessToken: ACCESS_TOKEN, graphApi: GRAPH_API });
+    } catch (error) {
+      console.error("❌ ANIMATION_CAMPAIGN_LOOKUP_FAILED:", error.message);
+      return;
+    }
+  }
+  const site = animation.match ? { siteOwned: false, match: null } : await matchesSitePrompt(commentData.media.id, commentText);
+  const requestType = animation.match ? "animation" : site.match ? "prompt" : site.siteOwned ? null : getRequestTypeFromText(commentText);
 
   if (!requestType) {
     console.log(`🚫 NO TRIGGER KEYWORD FOUND: ${commentText}`);
@@ -649,19 +675,24 @@ async function handleMessageWebhook(event) {
     return;
   }
 
+  if (quickReplyPayload === "CHECK_FOLLOW_ANIMATION") {
+    await replyBasedOnFollowStatus(senderId, "animation");
+    return;
+  }
+
   if (quickReplyPayload === "CHECK_FOLLOW_YKS") {
     await replyBasedOnFollowStatus(senderId, "yks");
     return;
   }
 
   if (messageTextLower.includes("takip ettim") || messageTextLower.includes("zaten takip") || messageTextLower.includes("takipteyim")) {
-    const requestType = getRequestTypeFromText(messageText) || "prompt";
+    const requestType = getRequestTypeFromText(messageText) || latestRequestType(senderId) || "prompt";
     await replyBasedOnFollowStatus(senderId, requestType);
     return;
   }
 
   // 2. DM trigger keyword → takip kontrolüne göre link veya follow-gate
-  const requestType = getRequestTypeFromText(messageText);
+  const requestType = keywordMatches(messageText, "animasyon") ? "animation" : getRequestTypeFromText(messageText);
 
   if (requestType) {
     console.log(`📲 DM TRIGGER DETECTED (${requestType}): ${messageText}`);
@@ -695,6 +726,11 @@ async function handlePostbackWebhook(event) {
 
   if (payload === "CHECK_FOLLOW" || payload === "CHECK_FOLLOW_PROMPT" || followPayloadItem(payload)) {
     await replyBasedOnFollowStatus(senderId, "prompt", followPayloadItem(payload));
+    return;
+  }
+
+  if (payload === "CHECK_FOLLOW_ANIMATION") {
+    await replyBasedOnFollowStatus(senderId, "animation");
     return;
   }
 

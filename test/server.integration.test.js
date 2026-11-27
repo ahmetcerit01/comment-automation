@@ -45,6 +45,10 @@ globalThis.fetch = async (url, init) => {
     ] });
     if (u.includes("/me?fields=username")) return Response.json({ username: "ahmetcerit.ai" });
     if (u.includes("/17900000000000002?")) return Response.json({ permalink: "https://www.instagram.com/reel/DgFhMq0sIbW/" });
+    if (u.includes("/17900000000000003?")) return Response.json({
+      permalink: "https://www.instagram.com/reel/DgAnimasyon/",
+      caption: 'AI video araçlarına para ödemeyi bırak. 🎬\nYorumlara "ANİMASYON" yaz, skill\'i ve rehberi göndereyim.',
+    });
     return Response.json({ ok: true });
   }
   throw new Error(`UNEXPECTED NETWORK CALL: ${u}`);
@@ -161,6 +165,20 @@ test("site kuralındaki VIDEO yorumu takipten sonra ilgili Reel bağlantısını
   assert.match(msgCalls()[1].body.message.text, /\/icerik\/DgFhMq0sIbW/);
   await post(followEvent);
   assert.equal(msgCalls().length, 2, "same prompt must not be sent twice");
+  following = false;
+});
+
+test("ANİMASYON yorumu yeni Reel'de takip akışını açar ve doğru indirme sayfasını gönderir", async () => {
+  reset();
+  await post(commentEvent("animasyon-1", "ANİMASYON lütfen", "17900000000000003", "animasyon-user"));
+  assert.equal(msgCalls().length, 1);
+  assert.match(JSON.stringify(msgCalls()[0].body), /CHECK_FOLLOW_ANIMATION/);
+  assert.ok(graphCalls.some((call) => call.url.includes("/animasyon-1/replies")));
+  following = true;
+  await post({ object: "instagram", entry: [{ id: "ig_business", messaging: [{
+    sender: { id: "animasyon-user" }, recipient: { id: "ig_business" }, postback: { payload: "CHECK_FOLLOW_ANIMATION" },
+  }] }] });
+  assert.match(msgCalls()[1].body.message.text, /\/animasyon/);
   following = false;
 });
 
